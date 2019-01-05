@@ -39,9 +39,8 @@ reg [15:0] PC;
 // don't have reset yet, so init AB on code start
 reg [15:0] AB = 16'h0400;
 
-reg [8:0] ALU;
+reg [7:0] ALU;
 
-wire [7:0] ADD = ALU[7:0];
 wire [7:0] ABH = AB[15:8];
 wire [7:0] ABL = AB[7:0];
 wire [7:0] PCH = PC[15:8];
@@ -62,10 +61,10 @@ assign DB = WE ? 8'hzz : DO;
  * ALU flag outputs
  */
 
-wire NO = ALU[7];
-wire CO = ALU[8];
-wire ZO = ALU[7:0] == 0;
-wire VO = NO ^ CO ^ A[7] ^ BI[7];
+wire NO;
+wire ZO;
+wire VO;
+reg CO;
 
 reg cond_true;
 
@@ -77,12 +76,13 @@ wire jmp  = (IR == 8'h4c || IR == 8'h6c || IR == 8'h20 || IR == 8'h00);
 reg rmw;
 
 /*
- * ALU inputs/outputs/operation
+ * ALU inputs/outputs/operation control signals
  */
 reg [2:0] alu_ai;
 reg [2:0] alu_bi;
 reg [4:0] alu_op;
 reg [2:0] alu_ld;
+reg alu_pass_hc = 1;
 
 // processor state 
 reg [4:0] state = FETCH;
@@ -98,7 +98,7 @@ always @(posedge clk)
     case( state )
         DECODE:  
             casez( IR )
-                8'b0??0_?000:           AB <= { 8'h01, ADD };       // stack instruction
+                8'b0??0_?000:           AB <= { 8'h01, ALU };       // stack instruction
                 8'b????_0001:           AB <= { 8'h00,  DB };       // (ZP,X) or (ZP),Y
                 8'b????_01??:           AB <= { 8'h00,  DB };       // ZP (possibly indexed)
             default:                    AB <= {   PCH, PCL };
@@ -108,27 +108,27 @@ always @(posedge clk)
         RTS0:                           AB <= {   PCH, PCL };
         DATA: if( !rmw )                AB <= {   PCH, PCL };
         IND0:                           AB <= {   PCH, PCL };
-        ABS0:                           AB <= {    DB, ADD }; 
-        ABS1:                           AB <= {   ADD, ABL }; 
-        ZP0:                            AB <= { 8'h00, ADD };
-        ZP1:                            AB <= { 8'h00, ADD };
+        ABS0:                           AB <= {    DB, ALU }; 
+        ABS1:                           AB <= {   ALU, ABL }; 
+        ZP0:                            AB <= { 8'h00, ALU };
+        ZP1:                            AB <= { 8'h00, ALU };
         STK0:   if( IR[3] )             AB <= {   PCH, PCL };       // only for PHA,PHP
-                else                    AB <= { 8'h01, ADD }; 
+                else                    AB <= { 8'h01, ALU }; 
         STK1:
             casez( IR )
-                8'b??0?_????:           AB <= { 8'h01, ADD };       // BRK/RTI
+                8'b??0?_????:           AB <= { 8'h01, ALU };       // BRK/RTI
                 8'b?01?_????:           AB <= {   PCH, PCL };       // JSR
-                8'b?11?_????:           AB <= {    DB, ADD };       // RTS
+                8'b?11?_????:           AB <= {    DB, ALU };       // RTS
             endcase
 
         STK2:
             casez( IR )
                 8'b?0??_????:           AB <= { 8'hFF, 8'hFE };     // BRK
-                8'b?1??_????:           AB <= {    DB, ADD };       // RTI
+                8'b?1??_????:           AB <= {    DB, ALU };       // RTI
             endcase
-        BRA0:                           AB <= {   PCH, ADD };       // branch taken
-        BRA1:                           AB <= {   ADD, ABL };       // page crossing forward
-        BRA2:                           AB <= {   ADD, ABL };       // page crossing backward
+        BRA0:                           AB <= {   PCH, ALU };       // branch taken
+        BRA1:                           AB <= {   ALU, ABL };       // page crossing forward
+        BRA2:                           AB <= {   ALU, ABL };       // page crossing backward
     endcase
 
 /*
@@ -203,7 +203,7 @@ always @* begin
         STK0:
             casez( IR )
                 8'b?00?_1???:           DO = P;                     // PHP
-                8'b?10?_1???:           DO = ADD;                   // PHA
+                8'b?10?_1???:           DO = ALU;                   // PHA
                 8'b????_0???:           DO = PCH;                   // JSR/BRK
             endcase
 
@@ -466,82 +466,82 @@ always @* begin
         DECODE:
             casez( IR )
                 8'b00?0_0000:           alu_op = ALU_AI;        // JSR/BRK
-                8'b01?0_0000:           alu_op = ALU_ADD;       // RTS/RTI
+                8'b01?0_0000:           alu_op = ALU_ADC;       // RTS/RTI
 
                 8'b0?00_1000:           alu_op = ALU_AI;        // PHP/PHA
-                8'b0?10_1000:           alu_op = ALU_ADD;       // PLP/PLA
-                8'b1000_1000:           alu_op = ALU_ADD;       // DEY 
+                8'b0?10_1000:           alu_op = ALU_ADC;       // PLP/PLA
+                8'b1000_1000:           alu_op = ALU_ADC;       // DEY 
                 8'b1001_1000:           alu_op = ALU_AI;        // TYA
-                8'b1100_1000:           alu_op = ALU_ADD;       // INY 
-                8'b1110_1000:           alu_op = ALU_ADD;       // INX
+                8'b1100_1000:           alu_op = ALU_ADC;       // INY 
+                8'b1110_1000:           alu_op = ALU_ADC;       // INX
 
                 8'b00??_1010:           alu_op = ALU_ROL;       // ASL/ROL A
                 8'b01??_1010:           alu_op = ALU_ROR;       // LSR/ROR A
                 8'b100?_1010:           alu_op = ALU_AI;        // TXA/TXS
                 8'b1010_10?0:           alu_op = ALU_AI;        // TAX/TAY
                 8'b1011_1010:           alu_op = ALU_AI;        // TSX
-                8'b1100_1010:           alu_op = ALU_ADD;       // DEX 
+                8'b1100_1010:           alu_op = ALU_ADC;       // DEX 
             endcase
 
         ABS0:
             casez( IR )
-                8'b1011_1110:           alu_op = ALU_ADD;       // LDX ABS,Y 
-                8'b????_1001:           alu_op = ALU_ADD;       // ABS,Y
-                8'b???1_11??:           alu_op = ALU_ADD;       // ABS,X
+                8'b1011_1110:           alu_op = ALU_ADC;       // LDX ABS,Y 
+                8'b????_1001:           alu_op = ALU_ADC;       // ABS,Y
+                8'b???1_11??:           alu_op = ALU_ADC;       // ABS,X
                 8'b00?0_0000:           alu_op = ALU_AI;        // JSR/BRK
                 8'b???0_11??:           alu_op = ALU_AI;        // ABS
-                8'b???1_0001:           alu_op = ALU_ADD;       // (ZP), Y
+                8'b???1_0001:           alu_op = ALU_ADC;       // (ZP), Y
                 8'b???0_0001:           alu_op = ALU_AI;        // (ZP, X)
             endcase
 
-        ABS1:                           alu_op = ALU_ADD;       //
+        ABS1:                           alu_op = ALU_ADC;       //
 
         ZP0:
             casez( IR )
-                8'b10?1_0110:           alu_op = ALU_ADD;       // LDX/STX ZP,Y
-                8'b????_01??:           alu_op = ALU_ADD;       // all other ZP,X
-                8'b???0_0001:           alu_op = ALU_ADD;       // (ZP,X)
+                8'b10?1_0110:           alu_op = ALU_ADC;       // LDX/STX ZP,Y
+                8'b????_01??:           alu_op = ALU_ADC;       // all other ZP,X
+                8'b???0_0001:           alu_op = ALU_ADC;       // (ZP,X)
                 8'b???1_0001:           alu_op = ALU_AI;        // (ZP), Y
             endcase
 
         ZP1:
             casez( IR )
-                8'b???0_0001:           alu_op = ALU_ADD;       // (ZP,X)
-                8'b???1_0001:           alu_op = ALU_ADD;       // (ZP), Y
+                8'b???0_0001:           alu_op = ALU_ADC;       // (ZP,X)
+                8'b???1_0001:           alu_op = ALU_ADC;       // (ZP), Y
             endcase
 
         STK0:
             casez( IR )
-                8'b?1??_0???:           alu_op = ALU_ADD;       // RTS/RTI
-                8'b?0??_0???:           alu_op = ALU_ADD;       // JSR/BRK
+                8'b?1??_0???:           alu_op = ALU_ADC;       // RTS/RTI
+                8'b?0??_0???:           alu_op = ALU_ADC;       // JSR/BRK
                 8'b??0?_1???:           alu_op = ALU_AI;        // PHP/PHA
             endcase
 
         STK1:
             casez( IR )
-                8'b?10?_????:           alu_op = ALU_ADD;       // RTI
-                8'b?0??_????:           alu_op = ALU_ADD;       // JSR/BRK
+                8'b?10?_????:           alu_op = ALU_ADC;       // RTI
+                8'b?0??_????:           alu_op = ALU_ADC;       // JSR/BRK
                 8'b?11?_????:           alu_op = ALU_AI;        // RTS
             endcase
 
         STK2:
             casez( IR )
-                8'b?0??_????:           alu_op = ALU_ADD;       // BRK 
+                8'b?0??_????:           alu_op = ALU_ADC;       // BRK 
                 8'b?1??_????:           alu_op = ALU_AI;        // RTI
             endcase
 
-        BRA0:                           alu_op = ALU_ADD;       //
+        BRA0:                           alu_op = ALU_ADC;       //
 
-        BRA1:                           alu_op = ALU_ADD;       // 
+        BRA1:                           alu_op = ALU_ADC;       // 
 
-        BRA2:                           alu_op = ALU_ADD;       // 
+        BRA2:                           alu_op = ALU_ADC;       // 
 
         DATA:
             casez( IR )
                 8'b00??_??10:           alu_op = ALU_ROL;       // ASL/ROL M
                 8'b01??_??10:           alu_op = ALU_ROR;       // LSR/ROR M
-                8'b110?_?110:           alu_op = ALU_ADD;       // DEC M
-                8'b111?_?110:           alu_op = ALU_ADD;       // INC M
+                8'b110?_?110:           alu_op = ALU_ADC;       // DEC M
+                8'b111?_?110:           alu_op = ALU_ADC;       // INC M
                 8'b100?_??00:           alu_op = ALU_AI;        // STY
                 8'b100?_??01:           alu_op = ALU_AI;        // STA
                 8'b100?_??10:           alu_op = ALU_AI;        // STX
@@ -551,15 +551,15 @@ always @* begin
             casez( IR )
                 8'b101?_????:           alu_op = ALU_AI;        // LDA/LDX/LDY
                 8'b0?10_1000:           alu_op = ALU_AI;        // PLA/PLP
-                8'b0?00_1000:           alu_op = ALU_ADD;       // PHA/PHP
+                8'b0?00_1000:           alu_op = ALU_ADC;       // PHA/PHP
                 8'b001?_??00:           alu_op = ALU_AND;       // BIT
-                8'b011?_??01:           alu_op = ALU_ADD;       // ADC
+                8'b011?_??01:           alu_op = ALU_ADC;       // ADC
                 8'b000?_??01:           alu_op = ALU_ORA;       // ORA
                 8'b001?_??01:           alu_op = ALU_AND;       // AND 
                 8'b010?_??01:           alu_op = ALU_EOR;       // EOR 
-                8'b11??_??01:           alu_op = ALU_ADD;       // SBC/CMP
-                8'b110?_??00:           alu_op = ALU_ADD;       // CPY
-                8'b111?_??00:           alu_op = ALU_ADD;       // CPX
+                8'b11??_??01:           alu_op = ALU_ADC;       // SBC/CMP
+                8'b110?_??00:           alu_op = ALU_ADC;       // CPY
+                8'b111?_??00:           alu_op = ALU_ADC;       // CPX
             endcase
     endcase
 end
@@ -698,17 +698,41 @@ always @*
  * ALU operation
  */
 
+/*
+ * split nibble addition to get half carry bit
+ */
+wire HC;
+wire [4:0] LSD = AI[3:0] + BI[3:0] + CI;        // least significant digit 
+wire [4:0] MSD = AI[7:4] + BI[7:4] + HC;        // most significant digit
+
+/*
+ * upper digit gets carry from lower digit, but only 
+ * if 'alu_pass_hc' control signal is set. Otherwise
+ * the 2 digits are separate.
+ */
+
+assign HC = LSD[4] & alu_pass_hc;
+
 always @*
     case( alu_op )
         ALU_AI:                         ALU = AI;
-        ALU_ADD:                        ALU = AI + BI + CI;
-        ALU_ROL:                        ALU = { AI[7:0], CI };
-        ALU_ROR:                        ALU = { AI[0], CI, AI[7:1] };
+        ALU_ADC:                        ALU = { MSD[3:0], LSD[3:0] };
+        ALU_ROL:                        ALU = { AI[6:0], CI };
+        ALU_ROR:                        ALU = { CI, AI[7:1] };
         ALU_ORA:                        ALU = AI | BI;
         ALU_EOR:                        ALU = AI ^ BI;
         ALU_AND:                        ALU = AI & BI;
     default:                            ALU = 8'h55;
     endcase
+
+assign NO = ALU[7];
+assign ZO = ALU[7:0] == 0;
+assign VO = NO ^ CO ^ A[7] ^ BI[7];
+
+always @*
+    if( alu_op == ALU_ROL )             CO = AI[7];
+    else if( alu_op == ALU_ROR )        CO = AI[0];
+    else                                CO = MSD[4];
 
 /*
  * register load
