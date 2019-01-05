@@ -38,7 +38,6 @@ reg [15:0] PC;
 
 // don't have reset yet, so init AB on code start
 reg [15:0] AB = 16'h0400;
-
 reg [7:0] ALU;
 
 reg [3:0] ADJL;
@@ -57,18 +56,43 @@ reg [7:0] BI;           // alu input B
 reg CI;                 // alu input carry
 
 /*
- * databus
- */
-assign DB = WE ? 8'hzz : DO;
-
-/*
  * ALU flag outputs
  */
 
 wire NO;
 wire ZO;
 wire VO;
-reg CO;
+wire CO;
+
+/*
+ * ALU inputs/outputs/operation control signals
+ */
+reg [2:0] alu_ai;
+reg [2:0] alu_bi;
+reg [4:0] alu_op;
+reg [2:0] alu_ld;
+
+wire HC;
+wire DHC;
+
+alu alu( 
+    .AI(AI),
+    .BI(BI),
+    .CI(CI),
+    .OUT(ALU),
+    .op(alu_op),
+    .N(NO),
+    .Z(ZO),
+    .C(CO),
+    .V(VO), 
+    .DC(DC),
+    .DHC(DHC) );
+
+/*
+ * databus
+ */
+assign DB = WE ? 8'hzz : DO;
+
 
 reg cond_true;
 
@@ -82,13 +106,6 @@ reg bcdadd;
 reg bcdsub;
 wire bcd = bcdadd | bcdsub;
 
-/*
- * ALU inputs/outputs/operation control signals
- */
-reg [2:0] alu_ai;
-reg [2:0] alu_bi;
-reg [4:0] alu_op;
-reg [2:0] alu_ld;
 
 // processor state
 reg [4:0] state = FETCH;
@@ -225,6 +242,21 @@ always @* begin
         DATA:                           DO = ALU;
     endcase
 end
+
+/*
+ * Adjustments for lower and upper nibbles. The adjustment is
+ * 6 for both add and subtract, but in case of subtract the value
+ * is inverted when it enters BI.
+ */
+always @*
+    if( bcdadd & (HC|DHC) )             ADJL = 6;
+    else if( bcdsub & ~HC )             ADJL = 6;
+    else                                ADJL = 0;
+
+always @*
+    if( bcdadd & (CO|DC) )              ADJH = 6;
+    else if( bcdsub & ~CO )             ADJH = 6;
+    else                                ADJH = 0;
 
 /*
  * M register holds recent value from DB as ALU input
@@ -724,75 +756,6 @@ always @*
         BI_NOTM:                        BI = ~M;
         BI_ZZZ:                         BI = 8'ha5;
     endcase
-
-/*
- * ALU operation
- */
-
-/*
- * split nibble addition to get the half carry bit out
- */
-
-wire HC;                                        // (binary) half carry bit
-wire [4:0] LSD = AI[3:0] + BI[3:0] + CI;        // least significant digit
-wire [4:0] MSD = AI[7:4] + BI[7:4] + HC;        // most significant digit
-
-assign HC = LSD[4];
-
-always @*
-    case( alu_op )
-        ALU_AI:                         ALU = AI;
-        ALU_ADC:                        ALU = { MSD[3:0], LSD[3:0] };
-        ALU_ROL:                        ALU = { AI[6:0], CI };
-        ALU_ROR:                        ALU = { CI, AI[7:1] };
-        ALU_ORA:                        ALU = AI | BI;
-        ALU_EOR:                        ALU = AI ^ BI;
-        ALU_AND:                        ALU = AI & BI;
-    default:                            ALU = 8'h55;
-    endcase
-
-assign NO = ALU[7];
-assign ZO = ALU[7:0] == 0;
-assign VO = NO ^ CO ^ A[7] ^ BI[7];
-
-always @*
-    if( alu_op == ALU_ROL )             CO = AI[7];
-    else if( alu_op == ALU_ROR )        CO = AI[0];
-    else                                CO = MSD[4];
-
-/*
- * BCD Adjust
- */
-
-/*
- * DHC is the decimal half carry. It is set when the lower 
- * nibble of the result is larger than 9. 
- */
-wire DHC = LSD[3:0] >= 10;
-
-/*
- * DC is the decimal carry. It is set when the upper nibble
- * of the result is larger than 9. We need to incorporate
- * the decimal carry from lower nibble here as well, in case
- * the lower nibble generates a carry after correction, while
- * upper nibble is equal to 9. 
- */
-wire DC  = (MSD[3:0] + DHC) >= 10;
-
-/*
- * Adjustments for lower and upper nibbles. The adjustment is
- * 6 for both add and subtract, but in case of subtract the value
- * is inverted when it enters BI.
- */
-always @*
-    if( bcdadd & (HC|DHC) )             ADJL = 6;
-    else if( bcdsub & ~HC )             ADJL = 6;
-    else                                ADJL = 0;
-
-always @*
-    if( bcdadd & (CO|DC) )              ADJH = 6;
-    else if( bcdsub & ~CO )             ADJH = 6;
-    else                                ADJH = 0;
 
 /*
  * register load
