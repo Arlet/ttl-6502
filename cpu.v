@@ -8,7 +8,7 @@
  *
  * initial version passes Klaus Dormann's test suite
  * but does not yet support RST/IRQ/RDY/NMI or BCD.
- * 
+ *
  * (C) Arlet Ottens, <arlet@c-scape.nl>
  *
  */
@@ -17,18 +17,18 @@ module cpu( clk, RST, AB, DB, WE, IRQ, NMI, RDY );
 
 `include "states.i"
 
-input clk;              // CPU clock 
+input clk;              // CPU clock
 input RST;              // RST signal
 output [15:0] AB;       // address bus
 inout [7:0] DB;         // data bus
 output WE;              // write enable
 input IRQ;              // interrupt request
 input NMI;              // non-maskable interrupt request
-input RDY;              // Ready signal. Pauses CPU when rdy=0 
+input RDY;              // Ready signal. Pauses CPU when rdy=0
 
 reg N, V, D, I, Z, C;   // flags
 
-reg [7:0] S = 8'hff;    
+reg [7:0] S = 8'hff;
 reg [7:0] X = 5;
 reg [7:0] Y = 3;
 reg [7:0] A = 8'h41;
@@ -41,6 +41,10 @@ reg [15:0] AB = 16'h0400;
 
 reg [7:0] ALU;
 
+reg [3:0] ADJL;
+reg [3:0] ADJH;
+
+wire [7:0] ADJ = { ADJH, ADJL };
 wire [7:0] ABH = AB[15:8];
 wire [7:0] ABL = AB[7:0];
 wire [7:0] PCH = PC[15:8];
@@ -72,8 +76,11 @@ reg cond_true;
  * some special instructions
  */
 reg ind;
-wire jmp  = (IR == 8'h4c || IR == 8'h6c || IR == 8'h20 || IR == 8'h00); 
+wire jmp  = (IR == 8'h4c || IR == 8'h6c || IR == 8'h20 || IR == 8'h00);
 reg rmw;
+reg bcdadd;
+reg bcdsub;
+wire bcd = bcdadd | bcdsub;
 
 /*
  * ALU inputs/outputs/operation control signals
@@ -82,21 +89,20 @@ reg [2:0] alu_ai;
 reg [2:0] alu_bi;
 reg [4:0] alu_op;
 reg [2:0] alu_ld;
-reg alu_pass_hc = 1;
 
-// processor state 
+// processor state
 reg [4:0] state = FETCH;
 
 // flags
 wire [7:0] P = { N, V, 2'b11, D, I, Z, C };
 
-/* 
+/*
  * Address Bus generation
  *
  */
 always @(posedge clk)
     case( state )
-        DECODE:  
+        DECODE:
             casez( IR )
                 8'b0??0_?000:           AB <= { 8'h01, ALU };       // stack instruction
                 8'b????_0001:           AB <= { 8'h00,  DB };       // (ZP,X) or (ZP),Y
@@ -105,15 +111,16 @@ always @(posedge clk)
             endcase
 
         FETCH:                          AB <= {   PCH, PCL };
+        BCD0:                           AB <= {   PCH, PCL };
         RTS0:                           AB <= {   PCH, PCL };
         DATA: if( !rmw )                AB <= {   PCH, PCL };
         IND0:                           AB <= {   PCH, PCL };
-        ABS0:                           AB <= {    DB, ALU }; 
-        ABS1:                           AB <= {   ALU, ABL }; 
+        ABS0:                           AB <= {    DB, ALU };
+        ABS1:                           AB <= {   ALU, ABL };
         ZP0:                            AB <= { 8'h00, ALU };
         ZP1:                            AB <= { 8'h00, ALU };
         STK0:   if( IR[3] )             AB <= {   PCH, PCL };       // only for PHA,PHP
-                else                    AB <= { 8'h01, ALU }; 
+                else                    AB <= { 8'h01, ALU };
         STK1:
             casez( IR )
                 8'b??0?_????:           AB <= { 8'h01, ALU };       // BRK/RTI
@@ -142,8 +149,9 @@ always @(negedge clk)
                 8'b0??0_1000:           PC <= AB;                   // PHA, PLA
                 default:                PC <= AB + 1;
             endcase
-        RTS0, IND0, FETCH:              PC <= AB + 1;
-        ABS0: if( IR[3] )               PC <= AB + 1;               // only for true ABS 
+        BCD0, RTS0, IND0:               PC <= AB + 1;
+        FETCH: if( !bcd )               PC <= AB + 1;
+        ABS0: if( IR[3] )               PC <= AB + 1;               // only for true ABS
     endcase
 
 /*
@@ -151,7 +159,7 @@ always @(negedge clk)
  */
 always @(posedge clk)
     case( state )
-        DECODE:  
+        DECODE:
             casez( IR )
                 8'b00?0_0000:           WE <= 0;                    // BRK/JSR
                 8'b0?00_1000:           WE <= 0;                    // PHA/PHP
@@ -173,13 +181,13 @@ always @(posedge clk)
 
         DATA:                           WE <= !rmw;
 
-        ABS0: 
+        ABS0:
             casez( IR )
                 8'b100?_????:           WE <= CO;                   // STA (ZP,X)/(ZP),Y ABS
                 default:                WE <= 1;
             endcase
 
-        ABS1: 
+        ABS1:
             casez( IR )
                 8'b100?_????:           WE <= 0;                    // STA (ZP,X)/(ZP),Y ABS
                 default:                WE <= 1;
@@ -190,11 +198,11 @@ always @(posedge clk)
                 8'b1001_01??:           WE <= 0;                    // STA ZP,X/STX ZP,Y
                 default:                WE <= 1;
             endcase
-            
+
         default:                        WE <= 1;
     endcase
 
-/* 
+/*
  * Data Output
  */
 always @* begin
@@ -238,7 +246,9 @@ always @(posedge clk)
                 8'b?1??_????:           M <= DB;                    // RTS/RTI
             endcase
 
-        DATA:                           M <= DB;                    // 
+        DATA:                           M <= DB;                    //
+
+        FETCH:                          M <= ADJ;
     endcase
 
 /*
@@ -246,7 +256,9 @@ always @(posedge clk)
  */
 always @(posedge clk)
     case( state )
-        FETCH:                          IR <= DB;
+        FETCH: if( !bcd )               IR <= DB;
+
+        BCD0:                           IR <= DB;
 
         DECODE:
             casez( IR )
@@ -275,13 +287,13 @@ always @* begin
                 8'b1010_10?0:           alu_ai = AI_A;          // TAX/TAY
                 8'b1?00_1000:           alu_ai = AI_Y;          // DEY/INY
                 8'b1110_1000:           alu_ai = AI_X;          // INX
-                8'b1100_1010:           alu_ai = AI_X;          // DEX 
+                8'b1100_1010:           alu_ai = AI_X;          // DEX
                 8'b0???_1010:           alu_ai = AI_A;          // ASL/ROL/LSR/ROR A
             endcase
 
         ABS0:
             casez( IR )
-                8'b1011_1110:           alu_ai = AI_Y;          // LDX ABS,Y 
+                8'b1011_1110:           alu_ai = AI_Y;          // LDX ABS,Y
                 8'b????_1001:           alu_ai = AI_Y;          // ABS,Y
                 8'b???1_11??:           alu_ai = AI_X;          // ABS,X
                 8'b00?0_0000:           alu_ai = AI_M;          // JSR/BRK
@@ -321,15 +333,15 @@ always @* begin
 
         STK2:
             casez( IR )
-                8'b?0??_????:           alu_ai = AI_S;          // BRK 
+                8'b?0??_????:           alu_ai = AI_S;          // BRK
                 8'b?1??_????:           alu_ai = AI_M;          // RTI
             endcase
 
         BRA0:                           alu_ai = AI_PCL;        //
 
-        BRA1:                           alu_ai = AI_PCH;        // 
+        BRA1:                           alu_ai = AI_PCH;        //
 
-        BRA2:                           alu_ai = AI_PCH;        // 
+        BRA2:                           alu_ai = AI_PCH;        //
 
         DATA:
             casez( IR )
@@ -351,6 +363,8 @@ always @* begin
                 8'b110?_??00:           alu_ai = AI_Y;          // CPY
                 8'b111?_??00:           alu_ai = AI_X;          // CPX
             endcase
+
+        BCD0:                           alu_ai = AI_A;          // Decimal adjust
     endcase
 end
 
@@ -371,15 +385,15 @@ always @* begin
                 8'b1001_1000:           alu_bi = BI_00;         // TYA
                 8'b1010_10?0:           alu_bi = BI_00;         // TAX/TAY
                 8'b1011_1010:           alu_bi = BI_00;         // TSX
-                8'b1000_1000:           alu_bi = BI_FF;         // DEY 
-                8'b1100_1000:           alu_bi = BI_00;         // INY 
+                8'b1000_1000:           alu_bi = BI_FF;         // DEY
+                8'b1100_1000:           alu_bi = BI_00;         // INY
                 8'b1110_1000:           alu_bi = BI_00;         // INX
-                8'b1100_1010:           alu_bi = BI_FF;         // DEX 
+                8'b1100_1010:           alu_bi = BI_FF;         // DEX
             endcase
 
         ABS0:
             casez( IR )
-                8'b1011_1110:           alu_bi = BI_M;          // LDX ABS,Y 
+                8'b1011_1110:           alu_bi = BI_M;          // LDX ABS,Y
                 8'b????_1001:           alu_bi = BI_M;          // ABS,Y
                 8'b???1_11??:           alu_bi = BI_M;          // ABS,X
                 8'b00?0_0000:           alu_bi = BI_00;         // JSR/BRK
@@ -420,15 +434,15 @@ always @* begin
 
         STK2:
             casez( IR )
-                8'b?0??_????:           alu_bi = BI_FF;         // BRK 
+                8'b?0??_????:           alu_bi = BI_FF;         // BRK
                 8'b?1??_????:           alu_bi = BI_00;         // RTI
             endcase
 
         BRA0:                           alu_bi = BI_M;          //
 
-        BRA1:                           alu_bi = BI_00;         // 
+        BRA1:                           alu_bi = BI_00;         //
 
-        BRA2:                           alu_bi = BI_FF;         // 
+        BRA2:                           alu_bi = BI_FF;         //
 
         DATA:
             casez( IR )
@@ -447,12 +461,19 @@ always @* begin
                 8'b001?_??00:           alu_bi = BI_M;          // BIT
                 8'b011?_??01:           alu_bi = BI_M;          // ADC
                 8'b000?_??01:           alu_bi = BI_M;          // ORA
-                8'b001?_??01:           alu_bi = BI_M;          // AND 
-                8'b010?_??01:           alu_bi = BI_M;          // EOR 
+                8'b001?_??01:           alu_bi = BI_M;          // AND
+                8'b010?_??01:           alu_bi = BI_M;          // EOR
                 8'b11??_??01:           alu_bi = BI_NOTM;       // SBC/CMP
                 8'b110?_??00:           alu_bi = BI_NOTM;       // CPY
                 8'b111?_??00:           alu_bi = BI_NOTM;       // CPX
             endcase
+
+        BCD0:
+            casez( IR )
+                8'b011?_??01:           alu_bi = BI_M;          // BCD ADC
+                8'b111?_??01:           alu_bi = BI_NOTM;       // BCD SBC
+            endcase
+
     endcase
 end
 
@@ -470,9 +491,9 @@ always @* begin
 
                 8'b0?00_1000:           alu_op = ALU_AI;        // PHP/PHA
                 8'b0?10_1000:           alu_op = ALU_ADC;       // PLP/PLA
-                8'b1000_1000:           alu_op = ALU_ADC;       // DEY 
+                8'b1000_1000:           alu_op = ALU_ADC;       // DEY
                 8'b1001_1000:           alu_op = ALU_AI;        // TYA
-                8'b1100_1000:           alu_op = ALU_ADC;       // INY 
+                8'b1100_1000:           alu_op = ALU_ADC;       // INY
                 8'b1110_1000:           alu_op = ALU_ADC;       // INX
 
                 8'b00??_1010:           alu_op = ALU_ROL;       // ASL/ROL A
@@ -480,12 +501,12 @@ always @* begin
                 8'b100?_1010:           alu_op = ALU_AI;        // TXA/TXS
                 8'b1010_10?0:           alu_op = ALU_AI;        // TAX/TAY
                 8'b1011_1010:           alu_op = ALU_AI;        // TSX
-                8'b1100_1010:           alu_op = ALU_ADC;       // DEX 
+                8'b1100_1010:           alu_op = ALU_ADC;       // DEX
             endcase
 
         ABS0:
             casez( IR )
-                8'b1011_1110:           alu_op = ALU_ADC;       // LDX ABS,Y 
+                8'b1011_1110:           alu_op = ALU_ADC;       // LDX ABS,Y
                 8'b????_1001:           alu_op = ALU_ADC;       // ABS,Y
                 8'b???1_11??:           alu_op = ALU_ADC;       // ABS,X
                 8'b00?0_0000:           alu_op = ALU_AI;        // JSR/BRK
@@ -526,15 +547,15 @@ always @* begin
 
         STK2:
             casez( IR )
-                8'b?0??_????:           alu_op = ALU_ADC;       // BRK 
+                8'b?0??_????:           alu_op = ALU_ADC;       // BRK
                 8'b?1??_????:           alu_op = ALU_AI;        // RTI
             endcase
 
         BRA0:                           alu_op = ALU_ADC;       //
 
-        BRA1:                           alu_op = ALU_ADC;       // 
+        BRA1:                           alu_op = ALU_ADC;       //
 
-        BRA2:                           alu_op = ALU_ADC;       // 
+        BRA2:                           alu_op = ALU_ADC;       //
 
         DATA:
             casez( IR )
@@ -555,12 +576,14 @@ always @* begin
                 8'b001?_??00:           alu_op = ALU_AND;       // BIT
                 8'b011?_??01:           alu_op = ALU_ADC;       // ADC
                 8'b000?_??01:           alu_op = ALU_ORA;       // ORA
-                8'b001?_??01:           alu_op = ALU_AND;       // AND 
-                8'b010?_??01:           alu_op = ALU_EOR;       // EOR 
+                8'b001?_??01:           alu_op = ALU_AND;       // AND
+                8'b010?_??01:           alu_op = ALU_EOR;       // EOR
                 8'b11??_??01:           alu_op = ALU_ADC;       // SBC/CMP
                 8'b110?_??00:           alu_op = ALU_ADC;       // CPY
                 8'b111?_??00:           alu_op = ALU_ADC;       // CPX
             endcase
+
+        BCD0:                           alu_op = ALU_ADC;       // decimal adjust
     endcase
 end
 
@@ -571,7 +594,7 @@ end
 always @* begin
     alu_ld = 0;
     case( state )
-        DECODE:         
+        DECODE:
             casez( IR )
                 8'b1000_1010:           alu_ld = LD_A;          // TXA
                 8'b0???_1010:           alu_ld = LD_A;          // ROL/ASL/ROR/LSR A
@@ -585,17 +608,17 @@ always @* begin
                 8'b0?10_1000:           alu_ld = LD_S;          // PLP/PLA
             endcase
 
-        FETCH:          
+        FETCH:
             casez( IR )
-                8'b0???_??01:           alu_ld = LD_A;          // ORA/AND/EOR/ADC 
-                8'b101?_??01:           alu_ld = LD_A;          // LDA 
+                8'b0???_??01:           alu_ld = LD_A;          // ORA/AND/EOR/ADC
+                8'b101?_??01:           alu_ld = LD_A;          // LDA
                 8'b111?_??01:           alu_ld = LD_A;          // SBC
                 8'b?11?_10??:           alu_ld = LD_A;          // PLA
                 8'b101?_??10:           alu_ld = LD_X;          // LDX
                 8'b1010_??00:           alu_ld = LD_Y;          // LDY
                 8'b1011_?100:           alu_ld = LD_Y;          // LDY
                 8'b0?00_1000:           alu_ld = LD_S;          // PHA/PHP
-            endcase 
+            endcase
 
         STK0:
             casez( IR )
@@ -611,8 +634,10 @@ always @* begin
 
         STK2:
             casez( IR )
-                8'b?0??_????:           alu_ld = LD_S;          // BRK 
+                8'b?0??_????:           alu_ld = LD_S;          // BRK
             endcase
+
+        BCD0:                           alu_ld = LD_A;          //
     endcase
 end
 
@@ -659,8 +684,14 @@ always @* begin
 
         DATA:
             casez( IR )
-                8'b0?1?_?110:           CI = C;                 // ROL/ROR MEM 
+                8'b0?1?_?110:           CI = C;                 // ROL/ROR MEM
                 8'b111?_?110:           CI = 1;                 // INC M
+            endcase
+
+        BCD0:
+            casez( IR )
+                8'b011?_??01:           CI = 0;                 // BCD ADC
+                8'b111?_??01:           CI = 1;                 // BCD SBC
             endcase
     endcase
 end
@@ -699,19 +730,14 @@ always @*
  */
 
 /*
- * split nibble addition to get half carry bit
+ * split nibble addition to get the half carry bit out
  */
-wire HC;
-wire [4:0] LSD = AI[3:0] + BI[3:0] + CI;        // least significant digit 
+
+wire HC;                                        // (binary) half carry bit
+wire [4:0] LSD = AI[3:0] + BI[3:0] + CI;        // least significant digit
 wire [4:0] MSD = AI[7:4] + BI[7:4] + HC;        // most significant digit
 
-/*
- * upper digit gets carry from lower digit, but only 
- * if 'alu_pass_hc' control signal is set. Otherwise
- * the 2 digits are separate.
- */
-
-assign HC = LSD[4] & alu_pass_hc;
+assign HC = LSD[4];
 
 always @*
     case( alu_op )
@@ -733,6 +759,40 @@ always @*
     if( alu_op == ALU_ROL )             CO = AI[7];
     else if( alu_op == ALU_ROR )        CO = AI[0];
     else                                CO = MSD[4];
+
+/*
+ * BCD Adjust
+ */
+
+/*
+ * DHC is the decimal half carry. It is set when the lower 
+ * nibble of the result is larger than 9. 
+ */
+wire DHC = LSD[3:0] >= 10;
+
+/*
+ * DC is the decimal carry. It is set when the upper nibble
+ * of the result is larger than 9. We need to incorporate
+ * the decimal carry from lower nibble here as well, in case
+ * the lower nibble generates a carry after correction, while
+ * upper nibble is equal to 9. 
+ */
+wire DC  = (MSD[3:0] + DHC) >= 10;
+
+/*
+ * Adjustments for lower and upper nibbles. The adjustment is
+ * 6 for both add and subtract, but in case of subtract the value
+ * is inverted when it enters BI.
+ */
+always @*
+    if( bcdadd & (HC|DHC) )             ADJL = 6;
+    else if( bcdsub & ~HC )             ADJL = 6;
+    else                                ADJL = 0;
+
+always @*
+    if( bcdadd & (CO|DC) )              ADJH = 6;
+    else if( bcdsub & ~CO )             ADJH = 6;
+    else                                ADJH = 0;
 
 /*
  * register load
@@ -759,7 +819,7 @@ always @(posedge clk)
 
         DATA:
             casez( IR )
-                8'b0???_?110: if( !WE ) C <= CO;                // ROL M 
+                8'b0???_?110: if( !WE ) C <= CO;                // ROL M
             endcase
 
         FETCH:
@@ -774,6 +834,12 @@ always @(posedge clk)
                 8'b0???_1010:           C <= CO;
                 8'b00?1_1000:           C <= IR[5];             // CLC/SEC
             endcase
+
+        BCD0:
+            casez( IR )
+                8'b011?_??01:           C <= C | CO;            // add
+            endcase
+
     endcase
 
 /*
@@ -783,8 +849,8 @@ always @(posedge clk)
     case( state )
         DATA:
             casez( IR )
-                8'b0???_?110: if( !WE ) N <= NO;                // ROL/ROR/ASL/LSR M 
-                8'b11??_?110: if( !WE ) N <= NO;                // INC/DEC M 
+                8'b0???_?110: if( !WE ) N <= NO;                // ROL/ROR/ASL/LSR M
+                8'b11??_?110: if( !WE ) N <= NO;                // INC/DEC M
                 8'b0010_?100:           N <= DB[7];             // BIT
             endcase
 
@@ -814,6 +880,8 @@ always @(posedge clk)
                 8'b11??_??01:           N <= NO;                // SBC/CMP
                 8'b101?_??01:           N <= NO;                // LDA
             endcase
+
+        BCD0:                           N <= NO;                // decimal Z after correction
     endcase
 
 /*
@@ -823,8 +891,8 @@ always @(posedge clk)
     case( state )
         DATA:
             casez( IR )
-                8'b0???_?110: if( !WE ) Z <= ZO;                // ROL/ROR/ASL/LSR M 
-                8'b11??_?110: if( !WE ) Z <= ZO;                // INC/DEC M 
+                8'b0???_?110: if( !WE ) Z <= ZO;                // ROL/ROR/ASL/LSR M
+                8'b11??_?110: if( !WE ) Z <= ZO;                // INC/DEC M
             endcase
 
         DECODE:
@@ -848,13 +916,15 @@ always @(posedge clk)
                 8'b0110_1000:           Z <= ZO;                // PLA
                 8'b0010_?100:           Z <= ZO;                // BIT
                 8'b0???_??01:           Z <= ZO;                // ADC
-                
+
                 8'b1010_????:           Z <= ZO;                // LDA/LDX/LDY
                 8'b101?_?1??:           Z <= ZO;                // LDA/LDX/LDY
                 8'b11?0_??00:           Z <= ZO;                // CPX/CPY
                 8'b11??_??01:           Z <= ZO;                // SBC/CMP
                 8'b101?_??01:           Z <= ZO;                // LDA
             endcase
+
+        BCD0:                           Z <= ZO;                // decimal Z after correction
     endcase
 
 /*
@@ -933,24 +1003,26 @@ always @(posedge clk)
  */
 always @(posedge clk)
     case( state )
-        DECODE: 
+        DECODE:
             casez( IR )
+                8'b1101_1011:           $finish;                // STP instruction
                 8'b???0_1001:           state <= FETCH;         // even col 9 ACC #IMM
                 8'b???1_1001:           state <= ABS0;          // odd col 9 ABS,Y
                 8'b1??0_00?0:           state <= FETCH;         // LDX/LDY/CPX/CPY #IMM
                 8'b???0_01??:           state <= DATA;          // ZP, not indexed
                 8'b????_0001:           state <= ZP0;           // (ZP,X) or (ZP),Y
-                8'b???1_01??:           state <= ZP0;           // ZP, indexed 
+                8'b???1_01??:           state <= ZP0;           // ZP, indexed
                 8'b????_11??:           state <= ABS0;          // cols CDE (ABS, ABS,X)
-                8'b0??0_?000:           state <= STK0;          // 
+                8'b0??0_?000:           state <= STK0;          //
                 8'b???1_0000:                                   // branches
                     if( cond_true )     state <= BRA0;          // take branch
-                    else                state <= FETCH;         //  
+                    else                state <= FETCH;         //
             endcase
 
         DATA :  if( !rmw )              state <= FETCH;
 
-        FETCH:                          state <= DECODE;
+        FETCH:  if( bcd )               state <= BCD0;
+                else                    state <= DECODE;
 
         ABS0 :  if( CO )                state <= ABS1;
                 else if( ind )          state <= IND0;
@@ -966,13 +1038,13 @@ always @(posedge clk)
 
         IND0 :                          state <= ABS0;
 
-        STK0 :  
+        STK0 :
             casez( IR )
                 8'b????_1???:           state <= FETCH;
                 8'b????_0???:           state <= STK1;
             endcase
 
-        STK1 :  
+        STK1 :
             casez( IR)
                 8'b??0?_????:           state <= STK2;          // RTI/BRK
                 8'b?11?_????:           state <= RTS0;          // RTS
@@ -984,18 +1056,29 @@ always @(posedge clk)
                 8'b?0??_????:           state <= IND0;          // BRK
                 8'b?1??_????:           state <= FETCH;         // RTI
             endcase
-        
+
         RTS0 :                          state <= FETCH;
 
         BRA0 : if( CO ^ M[7] )          state <= CO ? BRA1 : BRA2;
-               else                     state <= FETCH;         // 
+               else                     state <= FETCH;         //
         BRA1 :                          state <= FETCH;
         BRA2 :                          state <= FETCH;
+
+        BCD0 :                          state <= DECODE;
     endcase
 
 /*
- * extra state bits
+ * extra state bits and decoding
  */
+
+always @* begin
+    bcdadd = 0;
+    bcdsub = 0;
+    casez( IR )
+        8'b011?_??01:                   bcdadd = D;
+        8'b111?_??01:                   bcdsub = D;
+    endcase
+end
 
 /*
  * rmw
@@ -1053,6 +1136,7 @@ always @*
             BRA1:   statename = "BRA1";
             BRA2:   statename = "BRA2";
             RTS0:   statename = "RTS0";
+            BCD0:   statename = "BCD0";
     endcase
 
 integer cycle;
@@ -1060,11 +1144,14 @@ integer cycle;
 always @( posedge clk )
     cycle <= cycle + 1;
 
+//always @( posedge clk ) if( state == BCD0 ) $display( "%h %h %h", Y, X, ALU );
+
 always @( posedge clk )
       if( cycle[19:0] == 0 )
-      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CNZDIV: %d%d%d%d%d%d (%d)", 
+      //if( cycle > 75000000 )
+      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h CNZDIV: %d%d%d%d%d%d (%d)",
         cycle,
-        statename, AB, DB, DO, PC, IR, WE, M, S, A, X, Y, 
-        AI, BI, CI, alu_op, ALU, C, N, Z, D, I, V, cond_true  );
+        statename, AB, DB, DO, PC, IR, WE, M, S, A, X, Y,
+        AI, BI, CI, alu_op, ALU, CO, C, N, Z, D, I, V, cond_true  );
 
 endmodule
