@@ -17,52 +17,69 @@ module alu(
     input CI,                   // CI input
     output [7:0] OUT,           // ALU result
     input [2:0] op,             // operation
-    output reg C,               // Carry out
+    output reg C,               // Carry out (digital)
     output N,                   // Negative flag
     output Z,                   // Zero flag
     output V,                   // Overflow flag
-    output DC,                  // Decimal carry (result > 99)
-    output DHC                  // Decimal half carry (lower nibble > 9)
+    output HC,                  // Digital half carry
+    output DHC,                 // Decimal half carry (lower nibble > 9)
+    output DC                   // Decimal carry (result > 99)
     );
 
 `include "states.i"
 
-/*
- * split nibble addition to get the half carry bit out
- */
+wire [7:0] AND = AI & BI;
+wire [7:0] EOR = AI ^ BI;
+wire [7:0] ORA = AI | BI;
 
-wire HC;                                        // (binary) half carry bit
-wire [4:0] LSD = AI[3:0] + BI[3:0] + CI;        // least significant digit
-wire [4:0] MSD = AI[7:4] + BI[7:4] + HC;        // most significant digit
+// ripple carry bits
+wire C1 = (ORA[0] & CI) | AND[0]; 
+wire C2 = (ORA[1] & C1) | AND[1]; 
+wire C3 = (ORA[2] & C2) | AND[2]; 
+wire C4 = (ORA[3] & C3) | AND[3]; 
+wire C5 = (ORA[4] & C4) | AND[4]; 
+wire C6 = (ORA[5] & C5) | AND[5]; 
+wire C7 = (ORA[6] & C6) | AND[6]; 
+wire C8 = (ORA[7] & C7) | AND[7]; 
 
-assign HC = LSD[4];
+// adder 
+wire [7:0] ADC = EOR ^ { C7, C6, C5, C4, C3, C2, C1, CI };
 
+// mux
 always @*
     case( op )
         ALU_AI:                         OUT = AI;
-        ALU_ADC:                        OUT = { MSD[3:0], LSD[3:0] };
+        ALU_ADC:                        OUT = ADC;
         ALU_ROL:                        OUT = { AI[6:0], CI };
         ALU_ROR:                        OUT = { CI, AI[7:1] };
-        ALU_ORA:                        OUT = AI | BI;
-        ALU_EOR:                        OUT = AI ^ BI;
-        ALU_AND:                        OUT = AI & BI;
+        ALU_ORA:                        OUT = ORA;
+        ALU_EOR:                        OUT = EOR;
+        ALU_AND:                        OUT = AND;
     default:                            OUT = 8'h55;
     endcase
 
+// flags
 assign N = OUT[7];
 assign Z = OUT[7:0] == 0;
-assign V = N ^ C ^ AI[7] ^ BI[7];
+assign V = C8 ^ C7;
 
 always @*
     if( op == ALU_ROL )                 C = AI[7];
     else if( op == ALU_ROR )            C = AI[0];
-    else                                C = MSD[4];
+    else                                C = C8;
+
+/*
+ * HC is the digital half carry. It is just the carry output
+ * of the 4th bit
+ */
+
+assign HC = C4;
 
 /*
  * DHC is the decimal half carry. It is set when the lower 
  * nibble of the result is larger than 9. 
  */
-wire DHC = LSD[3:0] >= 10;
+wire DHC = ADC[3] & (ADC[2] | ADC[1]); 
 
 /*
  * DC is the decimal carry. It is set when the upper nibble
@@ -71,6 +88,6 @@ wire DHC = LSD[3:0] >= 10;
  * the lower nibble generates a carry after correction, while
  * upper nibble is equal to 9. 
  */
-wire DC  = (MSD[3:0] + DHC) >= 10;
+wire DC  = ADC[7] & (ADC[6] | ADC[5] | (ADC[4] & DHC));
 
 endmodule
