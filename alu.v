@@ -1,21 +1,23 @@
 /*
- * 
+ *
  * ALU module
  *
- * This module has two inputs AI, and BI, a carry input CI, and an 8 bit 
- * output port OUT. Operation is determined by 'op'. Status flags are 
- * return in C, N, Z, V, as well as DC (decimal carry) and DHC (decimal 
+ * This module has two inputs AI, and MI, a carry input CI, and an 8 bit
+ * output port OUT. Operation is determined by 'op'. Status flags are
+ * return in C, N, Z, V, as well as DC (decimal carry) and DHC (decimal
  * half carry).
  *
  *
  * (C) Arlet Ottens, <arlet@c-scape.nl>
  */
 
-module alu( 
+module alu(
     input [7:0] AI,             // AI input
-    input [7:0] BI,             // BI input
+    input [7:0] MI,             // MI input (contents of M register)
     input CI,                   // CI input
     output [7:0] OUT,           // ALU result
+    input mem_bi,               // if set, BI=MI, otherwise BI=00
+    input inv_bi,               // if set, invert BI
     input [2:0] op,             // operation
     output reg C,               // Carry out (digital)
     output N,                   // Negative flag
@@ -28,28 +30,50 @@ module alu(
 
 `include "states.i"
 
+/*
+ * BI input:
+ *
+ * mem | inv |  BI  | Usage
+ * ----+-----+------+------------------------------------------
+ *  0  |  0  |  00  | INC (with CI=1), or zero offset for address calc
+ *  0  |  1  |  FF  | DEC
+ *  1  |  0  |  MI  | LDA/ORA/AND/EOR/ADC/...
+ *  1  |  1  | ~MI  | SBC/CMP/CPX/CPY
+ */
+
+wire [7:0] MEM = {8{mem_bi}};   // mem_bi repeated 8 times
+wire [7:0] INV = {8{inv_bi}};   // inv_bi repeated 8 times
+
+/*
+ * determine BI input to ALU
+ */
+wire [7:0] BI = (MI & MEM) ^ INV;
+
+/*
+ * determine logic expression
+ */
 wire [7:0] AND = AI & BI;
 wire [7:0] EOR = AI ^ BI;
 wire [7:0] ORA = AI | BI;
 
-/* 
+/*
  * ripple carry chain
  *
  * note that the C8 output does not
  * depend on the operation, so it can
  * be set even when op = ALU_AI.
- * 
+ *
  */
-wire C1 = (ORA[0] & CI) | AND[0]; 
-wire C2 = (ORA[1] & C1) | AND[1]; 
-wire C3 = (ORA[2] & C2) | AND[2]; 
-wire C4 = (ORA[3] & C3) | AND[3]; 
-wire C5 = (ORA[4] & C4) | AND[4]; 
-wire C6 = (ORA[5] & C5) | AND[5]; 
-wire C7 = (ORA[6] & C6) | AND[6]; 
-wire C8 = (ORA[7] & C7) | AND[7]; 
+wire C1 = (ORA[0] & CI) | AND[0];
+wire C2 = (ORA[1] & C1) | AND[1];
+wire C3 = (ORA[2] & C2) | AND[2];
+wire C4 = (ORA[3] & C3) | AND[3];
+wire C5 = (ORA[4] & C4) | AND[4];
+wire C6 = (ORA[5] & C5) | AND[5];
+wire C7 = (ORA[6] & C6) | AND[6];
+wire C8 = (ORA[7] & C7) | AND[7];
 
-// adder 
+// adder
 wire [7:0] ADC = EOR ^ { C7, C6, C5, C4, C3, C2, C1, CI };
 
 // mux
@@ -71,8 +95,8 @@ assign Z = OUT[7:0] == 0;
 assign V = C8 ^ C7;
 
 /*
- * Carry out. For ROL/ROR, the carry is the bit that's 
- * shifted out. Otherwise, it's the output from the 
+ * Carry out. For ROL/ROR, the carry is the bit that's
+ * shifted out. Otherwise, it's the output from the
  * ripple carry chain.
  */
 always @*
@@ -88,17 +112,17 @@ always @*
 assign HC = C4;
 
 /*
- * DHC is the decimal half carry. It is set when the lower 
- * nibble of the result is larger than 9. 
+ * DHC is the decimal half carry. It is set when the lower
+ * nibble of the result is larger than 9.
  */
-wire DHC = ADC[3] & (ADC[2] | ADC[1]); 
+wire DHC = ADC[3] & (ADC[2] | ADC[1]);
 
 /*
  * DC is the decimal carry. It is set when the upper nibble
  * of the result is larger than 9. We need to incorporate
  * the decimal carry from lower nibble here as well, in case
  * the lower nibble generates a carry after correction, while
- * upper nibble is equal to 9. 
+ * upper nibble is equal to 9.
  */
 wire DC  = ADC[7] & (ADC[6] | ADC[5] | (ADC[4] & DHC));
 

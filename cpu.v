@@ -6,8 +6,8 @@
  * evolves, different parts will be rewritten
  * to match the hardware design.
  *
- * This version passes Klaus Dormann's test suite,
- * including BCD, but does not yet support RST/IRQ/RDY/NMI.
+ * initial version passes Debug Dormann's test suite
+ * but does not yet support RST/IRQ/RDY/NMI or BCD.
  *
  * (C) Arlet Ottens, <arlet@c-scape.nl>
  *
@@ -53,7 +53,7 @@ wire [7:0] PCL = PC[7:0];
 reg WE = 1;             // write enable (active low)
 reg [7:0] DO;           // data out
 reg [7:0] AI;           // alu input A
-reg [7:0] BI;           // alu input B
+//reg [7:0] BI;           // alu input B
 reg CI;                 // alu input carry
 
 /*
@@ -72,20 +72,24 @@ reg [2:0] alu_ai;
 reg [2:0] alu_bi;
 reg [4:0] alu_op;
 reg [2:0] alu_ld;
+reg mem_bi;
+reg inv_bi;
 
 wire HC;
 wire DHC;
 
-alu alu( 
+alu alu(
     .AI(AI),
-    .BI(BI),
+    .MI(M),
     .CI(CI),
     .OUT(ALU),
+    .mem_bi(mem_bi),
+    .inv_bi(inv_bi),
     .op(alu_op),
     .N(NO),
     .Z(ZO),
     .C(CO),
-    .V(VO), 
+    .V(VO),
     .HC(HC),
     .DC(DC),
     .DHC(DHC) );
@@ -403,103 +407,205 @@ always @* begin
 end
 
 /*
- * ALU BI input
+ * ALU mem_bi signal
  */
 
 always @* begin
-    alu_bi = BI_ZZZ;
+    mem_bi = 0;
     case( state )
         DECODE:
             casez( IR )
-                8'b01?0_0000:           alu_bi = BI_00;         // RTS/RTI
-                8'b0?10_1000:           alu_bi = BI_00;         // PLP/PLA
-                8'b1000_1000:           alu_bi = BI_FF;         // DEY
-                8'b1100_1000:           alu_bi = BI_00;         // INY
-                8'b1110_1000:           alu_bi = BI_00;         // INX
-                8'b1100_1010:           alu_bi = BI_FF;         // DEX
+                8'b01?0_0000:           mem_bi = 0;         // RTS/RTI
+                8'b0?10_1000:           mem_bi = 0;         // PLP/PLA
+                8'b1000_1000:           mem_bi = 0;         // DEY
+                8'b1100_1000:           mem_bi = 0;         // INY
+                8'b1110_1000:           mem_bi = 0;         // INX
+                8'b1100_1010:           mem_bi = 0;         // DEX
             endcase
 
         ABS0:
             casez( IR )
-                8'b1011_1110:           alu_bi = BI_M;          // LDX ABS,Y
-                8'b????_1001:           alu_bi = BI_M;          // ABS,Y
-                8'b???1_11??:           alu_bi = BI_M;          // ABS,X
-                8'b???0_11??:           alu_bi = BI_00;         // ABS
-                8'b00?0_0000:           alu_bi = BI_00;         // JSR/BRK
-                8'b???0_0001:           alu_bi = BI_00;         // (ZP, X)
-                8'b???1_0001:           alu_bi = BI_M;          // (ZP), Y
+                8'b1011_1110:           mem_bi = 1;         // LDX ABS,Y
+                8'b????_1001:           mem_bi = 1;         // ABS,Y
+                8'b???1_11??:           mem_bi = 1;         // ABS,X
+                8'b???0_11??:           mem_bi = 0;         // ABS
+                8'b00?0_0000:           mem_bi = 0;         // JSR/BRK
+                8'b???0_0001:           mem_bi = 0;         // (ZP, X)
+                8'b???1_0001:           mem_bi = 1;         // (ZP), Y
             endcase
 
-        ABS1:                           alu_bi = BI_00;
+        ABS1:                           mem_bi = 0;
 
         ZP0:
             casez( IR )
-                8'b10?1_0110:           alu_bi = BI_M;          // LDX/STX ZP,Y
-                8'b????_01??:           alu_bi = BI_M;          // all other ZP,X
-                8'b???0_0001:           alu_bi = BI_M;          // (ZP,X)
-                8'b???1_0001:           alu_bi = BI_00;         // (ZP), Y
+                8'b10?1_0110:           mem_bi = 1;         // LDX/STX ZP,Y
+                8'b????_01??:           mem_bi = 1;         // all other ZP,X
+                8'b???0_0001:           mem_bi = 1;         // (ZP,X)
+                8'b???1_0001:           mem_bi = 0;         // (ZP), Y
             endcase
 
         ZP1:
             casez( IR )
-                8'b???0_0001:           alu_bi = BI_M;          // (ZP,X)
-                8'b???1_0001:           alu_bi = BI_00;         // (ZP), Y
+                8'b???0_0001:           mem_bi = 1;         // (ZP,X)
+                8'b???1_0001:           mem_bi = 0;         // (ZP), Y
             endcase
 
         STK0:
             casez( IR )
-                8'b?1??_0???:           alu_bi = BI_00;         // RTS/RTI
-                8'b?0??_0???:           alu_bi = BI_FF;         // JSR/BRK
-                8'b??0?_1???:           alu_bi = BI_00;         // PHP/PHA
+                8'b?1??_0???:           mem_bi = 0;         // RTS/RTI
+                8'b?0??_0???:           mem_bi = 0;         // JSR/BRK
+                8'b??0?_1???:           mem_bi = 0;         // PHP/PHA
             endcase
 
         STK1:
             casez( IR )
-                8'b?10?_????:           alu_bi = BI_00;         // RTI
-                8'b?0??_????:           alu_bi = BI_FF;         // JSR/BRK
-                8'b?11?_????:           alu_bi = BI_00;         // RTS
+                8'b?10?_????:           mem_bi = 0;         // RTI
+                8'b?0??_????:           mem_bi = 0;         // JSR/BRK
+                8'b?11?_????:           mem_bi = 0;         // RTS
             endcase
 
         STK2:
             casez( IR )
-                8'b?0??_????:           alu_bi = BI_FF;         // BRK
-                8'b?1??_????:           alu_bi = BI_00;         // RTI
+                8'b?0??_????:           mem_bi = 0;         // BRK
+                8'b?1??_????:           mem_bi = 0;         // RTI
             endcase
 
-        BRA0:                           alu_bi = BI_M;          //
+        BRA0:                           mem_bi = 1;         //
 
-        BRA1:                           alu_bi = BI_00;         //
+        BRA1:                           mem_bi = 0;         //
 
-        BRA2:                           alu_bi = BI_FF;         //
+        BRA2:                           mem_bi = 0;         //
 
         DATA:
             casez( IR )
-                8'b110?_?110:           alu_bi = BI_FF;         // DEC M
-                8'b111?_?110:           alu_bi = BI_00;         // INC M
-                8'b100?_??00:           alu_bi = BI_00;         // STY
-                8'b100?_??01:           alu_bi = BI_00;         // STA
-                8'b100?_??10:           alu_bi = BI_00;         // STX
+                8'b110?_?110:           mem_bi = 0;         // DEC M
+                8'b111?_?110:           mem_bi = 0;         // INC M
+                8'b100?_??00:           mem_bi = 0;         // STY
+                8'b100?_??01:           mem_bi = 0;         // STA
+                8'b100?_??10:           mem_bi = 0;         // STX
             endcase
 
         FETCH:
             casez( IR )
-                8'b101?_????:           alu_bi = BI_00;         // LDA/LDX/LDY
-                8'b0?10_1000:           alu_bi = BI_00;         // PLA/PLP
-                8'b0?00_1000:           alu_bi = BI_FF;         // PHA/PHP
-                8'b001?_??00:           alu_bi = BI_M;          // BIT
-                8'b011?_??01:           alu_bi = BI_M;          // ADC
-                8'b000?_??01:           alu_bi = BI_M;          // ORA
-                8'b001?_??01:           alu_bi = BI_M;          // AND
-                8'b010?_??01:           alu_bi = BI_M;          // EOR
-                8'b11??_??01:           alu_bi = BI_NOTM;       // SBC/CMP
-                8'b110?_??00:           alu_bi = BI_NOTM;       // CPY
-                8'b111?_??00:           alu_bi = BI_NOTM;       // CPX
+                8'b101?_????:           mem_bi = 0;         // LDA/LDX/LDY
+                8'b0?10_1000:           mem_bi = 0;         // PLA/PLP
+                8'b0?00_1000:           mem_bi = 0;         // PHA/PHP
+                8'b001?_??00:           mem_bi = 1;         // BIT
+                8'b011?_??01:           mem_bi = 1;         // ADC
+                8'b000?_??01:           mem_bi = 1;         // ORA
+                8'b001?_??01:           mem_bi = 1;         // AND
+                8'b010?_??01:           mem_bi = 1;         // EOR
+                8'b11??_??01:           mem_bi = 1;         // SBC/CMP
+                8'b110?_??00:           mem_bi = 1;         // CPY
+                8'b111?_??00:           mem_bi = 1;         // CPX
             endcase
 
         BCD0:
             casez( IR )
-                8'b011?_??01:           alu_bi = BI_M;          // BCD ADC
-                8'b111?_??01:           alu_bi = BI_NOTM;       // BCD SBC
+                8'b011?_??01:           mem_bi = 1;         // BCD ADC
+                8'b111?_??01:           mem_bi = 1;         // BCD SBC
+            endcase
+
+    endcase
+end
+
+/*
+ * ALU inv_bi signal
+ */
+always @* begin
+    inv_bi = 0;
+    case( state )
+        DECODE:
+            casez( IR )
+                8'b01?0_0000:           inv_bi = 0;             // RTS/RTI
+                8'b0?10_1000:           inv_bi = 0;             // PLP/PLA
+                8'b1000_1000:           inv_bi = 1;             // DEY
+                8'b1100_1000:           inv_bi = 0;             // INY
+                8'b1110_1000:           inv_bi = 0;             // INX
+                8'b1100_1010:           inv_bi = 1;             // DEX
+            endcase
+
+        ABS0:
+            casez( IR )
+                8'b1011_1110:           inv_bi = 0;             // LDX ABS,Y
+                8'b????_1001:           inv_bi = 0;             // ABS,Y
+                8'b???1_11??:           inv_bi = 0;             // ABS,X
+                8'b???0_11??:           inv_bi = 0;             // ABS
+                8'b00?0_0000:           inv_bi = 0;             // JSR/BRK
+                8'b???0_0001:           inv_bi = 0;             // (ZP, X)
+                8'b???1_0001:           inv_bi = 0;             // (ZP), Y
+            endcase
+
+        ABS1:                           inv_bi = 0;
+
+        ZP0:
+            casez( IR )
+                8'b10?1_0110:           inv_bi = 0;             // LDX/STX ZP,Y
+                8'b????_01??:           inv_bi = 0;             // all other ZP,X
+                8'b???0_0001:           inv_bi = 0;             // (ZP,X)
+                8'b???1_0001:           inv_bi = 0;             // (ZP), Y
+            endcase
+
+        ZP1:
+            casez( IR )
+                8'b???0_0001:           inv_bi = 0;             // (ZP,X)
+                8'b???1_0001:           inv_bi = 0;             // (ZP), Y
+            endcase
+
+        STK0:
+            casez( IR )
+                8'b?1??_0???:           inv_bi = 0;             // RTS/RTI
+                8'b?0??_0???:           inv_bi = 1;             // JSR/BRK
+                8'b??0?_1???:           inv_bi = 0;             // PHP/PHA
+            endcase
+
+        STK1:
+            casez( IR )
+                8'b?10?_????:           inv_bi = 0;             // RTI
+                8'b?0??_????:           inv_bi = 1;             // JSR/BRK
+                8'b?11?_????:           inv_bi = 0;             // RTS
+            endcase
+
+        STK2:
+            casez( IR )
+                8'b?0??_????:           inv_bi = 1;             // BRK
+                8'b?1??_????:           inv_bi = 0;             // RTI
+            endcase
+
+        BRA0:                           inv_bi = 0;             //
+
+        BRA1:                           inv_bi = 0;             //
+
+        BRA2:                           inv_bi = 1;             //
+
+        DATA:
+            casez( IR )
+                8'b110?_?110:           inv_bi = 1;             // DEC M
+                8'b111?_?110:           inv_bi = 0;             // INC M
+                8'b100?_??00:           inv_bi = 0;             // STY
+                8'b100?_??01:           inv_bi = 0;             // STA
+                8'b100?_??10:           inv_bi = 0;             // STX
+            endcase
+
+        FETCH:
+            casez( IR )
+                8'b101?_????:           inv_bi = 0;             // LDA/LDX/LDY
+                8'b0?10_1000:           inv_bi = 0;             // PLA/PLP
+                8'b0?00_1000:           inv_bi = 1;             // PHA/PHP
+                8'b001?_??00:           inv_bi = 0;             // BIT
+                8'b011?_??01:           inv_bi = 0;             // ADC
+                8'b000?_??01:           inv_bi = 0;             // ORA
+                8'b001?_??01:           inv_bi = 0;             // AND
+                8'b010?_??01:           inv_bi = 0;             // EOR
+                8'b11??_??01:           inv_bi = 1;             // SBC/CMP
+                8'b110?_??00:           inv_bi = 1;             // CPY
+                8'b111?_??00:           inv_bi = 1;             // CPX
+            endcase
+
+        BCD0:
+            casez( IR )
+                8'b011?_??01:           inv_bi = 0;             // BCD ADC
+                8'b111?_??01:           inv_bi = 1;             // BCD SBC
             endcase
 
     endcase
@@ -685,7 +791,6 @@ always @*
 
 /*
  * ALU BI input
- */
 
 always @*
     case( alu_bi )
@@ -695,6 +800,7 @@ always @*
         BI_NOTM:                        BI = ~M;
         BI_ZZZ:                         BI = 8'ha5;
     endcase
+ */
 
 /*
  * register load
@@ -1053,6 +1159,6 @@ always @( posedge clk )
       $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h HC:%h DHC:%h CNZDIV: %d%d%d%d%d%d (%d)",
         cycle,
         statename, AB, DB, DO, PC, IR, WE, M, S, A, X, Y,
-        AI, BI, CI, alu_op, ALU, CO, HC, DHC, C, N, Z, D, I, V, cond_true  );
+        AI, alu.BI, CI, alu_op, ALU, CO, HC, DHC, C, N, Z, D, I, V, cond_true  );
 
 endmodule
