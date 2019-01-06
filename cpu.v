@@ -311,10 +311,7 @@ always @* begin
     case( state )
         DECODE:
             casez( IR )
-                8'b00?0_0000:           alu_ai = AI_S;          // JSR/BRK
-                8'b01?0_0000:           alu_ai = AI_S;          // RTS/RTI
-                8'b0?00_1000:           alu_ai = AI_S;          // PHP/PHA
-                8'b0?10_1000:           alu_ai = AI_S;          // PLP/PLA
+                8'b0??0_?000:           alu_ai = AI_S;          // JSR/BRK/RTS/RTI/PHA/PHP/PLP/PLA
                 8'b1011_1010:           alu_ai = AI_S;          // TSX
                 8'b100?_1010:           alu_ai = AI_X;          // TXA/TXS
                 8'b1001_1000:           alu_ai = AI_Y;          // TYA
@@ -898,7 +895,6 @@ always @(posedge clk)
             casez( IR )
                 8'b?11?_??01:           V <= VO;                // ADC/SBC
             endcase
-
 
         DECODE:
             casez( IR )
