@@ -6,14 +6,14 @@
  * evolves, different parts will be rewritten
  * to match the hardware design.
  *
- * initial version passes Klaus Dormann's test suite
- * but does not yet support RST/IRQ/RDY/NMI or BCD.
+ * This version passes Klaus Dormann's test suite,
+ * including BCD, but does not yet support RST/IRQ/RDY/NMI.
  *
  * (C) Arlet Ottens, <arlet@c-scape.nl>
  *
  */
 
-module cpu( clk, RST, AB, DB, WE, IRQ, NMI, RDY );
+module cpu( clk, RST, AB, DB, WE, IRQ, NMI, RDY, Debug );
 
 `include "states.i"
 
@@ -25,6 +25,7 @@ output WE;              // write enable
 input IRQ;              // interrupt request
 input NMI;              // non-maskable interrupt request
 input RDY;              // Ready signal. Pauses CPU when RDY=0
+input Debug;            // debug input, set when running very long test suite
 
 reg N, V, D, I, Z, C;   // flags
 
@@ -1048,8 +1049,7 @@ always @( posedge clk )
 //always @( posedge clk ) if( state == BCD0 ) $display( "%h %h %h", Y, X, ALU );
 
 always @( posedge clk )
-      if( cycle[19:0] == 0 || IR == 8'hdb )
-      //if( cycle > 77000000 )
+      if( cycle[19:0] == 0 || IR == 8'hdb || !Debug )
       $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h HC:%h DHC:%h CNZDIV: %d%d%d%d%d%d (%d)",
         cycle,
         statename, AB, DB, DO, PC, IR, WE, M, S, A, X, Y,
