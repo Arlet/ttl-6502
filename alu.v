@@ -23,9 +23,8 @@ module alu(
     output N,                   // Negative flag
     output Z,                   // Zero flag
     output V,                   // Overflow flag
-    output HCB,                 // Digital half carry/half borrow
-    output DHC,                 // Decimal half carry (lower nibble > 9)
-    output DC                   // Decimal carry (result > 99)
+    output adj_lsd,             // if set, lower digit needs BCD adjustment
+    output adj_msd              // if set, upper digit needs BCD adjustment
     );
 
 `include "states.i"
@@ -110,13 +109,19 @@ always @*
  * doing subtraction.
  */
 
-assign HCB = C4 ^ inv_bi;
+wire HCB = C4 ^ inv_bi;
 
 /*
  * DHC is the decimal half carry. It is set when the lower
  * nibble of the result is larger than 9.
  */
 wire DHC = ADC[3] & (ADC[2] | ADC[1]);
+
+/*
+ * The lower nibble needs BCD adjustment of +6/-6 if we
+ * have a digital carry/borrow, or a decimal carry.
+ */
+assign adj_lsd = HCB | DHC;
 
 /*
  * DC is the decimal carry. It is set when the upper nibble
@@ -126,5 +131,19 @@ wire DHC = ADC[3] & (ADC[2] | ADC[1]);
  * upper nibble is equal to 9.
  */
 wire DC  = ADC[7] & (ADC[6] | ADC[5] | (ADC[4] & DHC));
+
+/*
+ * CB is the digital carry/borrow signal. It is active high
+ * on carry (when adding) or borrow (when subtracting)
+ */
+
+wire CB = C8 ^ inv_bi;
+
+/*
+ * The lower nibble needs BCD adjustment of +6/-6 if we
+ * have a digital carry/borrow, or a decimal carry.
+ */
+assign adj_msd = CB | DC;
+
 
 endmodule
