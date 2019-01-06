@@ -32,7 +32,14 @@ wire [7:0] AND = AI & BI;
 wire [7:0] EOR = AI ^ BI;
 wire [7:0] ORA = AI | BI;
 
-// ripple carry bits
+/* 
+ * ripple carry chain
+ *
+ * note that the C8 output does not
+ * depend on the operation, so it can
+ * be set even when op = ALU_AI.
+ * 
+ */
 wire C1 = (ORA[0] & CI) | AND[0]; 
 wire C2 = (ORA[1] & C1) | AND[1]; 
 wire C3 = (ORA[2] & C2) | AND[2]; 
@@ -63,6 +70,11 @@ assign N = OUT[7];
 assign Z = OUT[7:0] == 0;
 assign V = C8 ^ C7;
 
+/*
+ * Carry out. For ROL/ROR, the carry is the bit that's 
+ * shifted out. Otherwise, it's the output from the 
+ * ripple carry chain.
+ */
 always @*
     if( op == ALU_ROL )                 C = AI[7];
     else if( op == ALU_ROR )            C = AI[0];
