@@ -80,13 +80,13 @@ wire [7:0] ADC = EOR ^ { C7, C6, C5, C4, C3, C2, C1, CI };
 always @*
     case( op )
         ALU_AI:                         OUT = AI;
+        ALU_BI:                         OUT = BI;
         ALU_ADC:                        OUT = ADC;
         ALU_ROL:                        OUT = { AI[6:0], CI };
         ALU_ROR:                        OUT = { CI, AI[7:1] };
         ALU_ORA:                        OUT = ORA;
         ALU_EOR:                        OUT = EOR;
         ALU_AND:                        OUT = AND;
-    default:                            OUT = 8'h55;
     endcase
 
 // flags
