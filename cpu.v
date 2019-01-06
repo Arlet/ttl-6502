@@ -106,10 +106,7 @@ reg cond_true;
 reg ind;
 wire jmp  = (IR == 8'h4c || IR == 8'h6c || IR == 8'h20 || IR == 8'h00);
 reg rmw;
-reg bcdadd;
-reg bcdsub;
-wire bcd = bcdadd | bcdsub;
-
+reg bcd;
 
 // processor state
 reg [4:0] state = FETCH;
@@ -448,7 +445,6 @@ always @* begin
         BRA2:                           mem_bi = 0;         //
         DATA:                           mem_bi = 0;
         BCD0:                           mem_bi = 1;
-
     endcase
 end
 
@@ -976,17 +972,18 @@ always @(posedge clk)
  * extra state bits and decoding
  */
 
-always @* begin
-    bcdadd = 0;
-    bcdsub = 0;
+/*
+ * bcd is set when doing ADC/SBC with D flag on
+ */
+
+always @* 
     casez( IR )
-        8'b011?_??01:                   bcdadd = D;
-        8'b111?_??01:                   bcdsub = D;
+        8'b?11?_??01:                   bcd = D;
+        default:                        bcd = 0;
     endcase
-end
 
 /*
- * rmw
+ * rmw is set when doing a read-modify-write instruction
  */
 
 always @(posedge clk)
