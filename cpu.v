@@ -75,7 +75,7 @@ reg [2:0] alu_ld;
 reg mem_bi;
 reg inv_bi;
 
-wire HC;
+wire HCB;
 wire DHC;
 
 alu alu(
@@ -90,7 +90,7 @@ alu alu(
     .Z(ZO),
     .C(CO),
     .V(VO),
-    .HC(HC),
+    .HCB(HCB),
     .DC(DC),
     .DHC(DHC) );
 
@@ -255,8 +255,7 @@ end
  * is inverted when it enters BI.
  */
 always @*
-    if( bcdadd & (HC|DHC) )             ADJL = 6;
-    else if( bcdsub & ~HC )             ADJL = 6;
+    if( bcd & (HCB|DHC) )               ADJL = 6;
     else                                ADJL = 0;
 
 always @*
@@ -1156,9 +1155,10 @@ always @( posedge clk )
 
 always @( posedge clk )
       if( cycle[19:0] == 0 || IR == 8'hdb || !Debug )
-      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h HC:%h DHC:%h CNZDIV: %d%d%d%d%d%d (%d)",
+      //if( cycle > 77000000 )
+      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h HCB:%h DHC:%h CNZDIV: %d%d%d%d%d%d (%d)",
         cycle,
         statename, AB, DB, DO, PC, IR, WE, M, S, A, X, Y,
-        AI, alu.BI, CI, alu_op, ALU, CO, HC, DHC, C, N, Z, D, I, V, cond_true  );
+        AI, alu.BI, CI, alu_op, ALU, CO, HCB, DHC, C, N, Z, D, I, V, cond_true  );
 
 endmodule

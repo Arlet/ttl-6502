@@ -23,7 +23,7 @@ module alu(
     output N,                   // Negative flag
     output Z,                   // Zero flag
     output V,                   // Overflow flag
-    output HC,                  // Digital half carry
+    output HCB,                 // Digital half carry/half borrow
     output DHC,                 // Decimal half carry (lower nibble > 9)
     output DC                   // Decimal carry (result > 99)
     );
@@ -105,11 +105,12 @@ always @*
     else                                C = C8;
 
 /*
- * HC is the digital half carry. It is just the carry output
- * of the 4th bit
+ * HCB is the digital half carry/half borrow. It is just the
+ * carry output of the 4th bit, or the borrow output when
+ * doing subtraction.
  */
 
-assign HC = C4;
+assign HCB = C4 ^ inv_bi;
 
 /*
  * DHC is the decimal half carry. It is set when the lower
