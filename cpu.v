@@ -118,6 +118,7 @@ wire [7:0] P = { N, V, 2'b11, D, I, Z, C };
  * Address Bus generation
  *
  */
+
 always @(posedge clk)
     case( state )
         DECODE:
@@ -125,20 +126,20 @@ always @(posedge clk)
                 8'b0??0_?000:           AB <= { 8'h01, ALU };       // stack instruction
                 8'b????_0001:           AB <= { 8'h00,  DB };       // (ZP,X) or (ZP),Y
                 8'b????_01??:           AB <= { 8'h00,  DB };       // ZP (possibly indexed)
-            default:                    AB <= {   PCH, PCL };
+            default:                    AB <= AB + 1;
             endcase
 
-        FETCH:                          AB <= {   PCH, PCL };
-        BCD0:                           AB <= {   PCH, PCL };
-        RTS0:                           AB <= {   PCH, PCL };
-        DATA: if( !rmw )                AB <= {   PCH, PCL };
-        IND0:                           AB <= {   PCH, PCL };
+        BCD0:                           AB <= AB + 1;
+        RTS0:                           AB <= AB + 1;
+        IND0:                           AB <= AB + 1;
+        FETCH: if( !bcd )               AB <= AB + 1;
+        DATA:  if( !rmw )               AB <= {   PCH, PCL };
         ABS0:                           AB <= {    DB, ALU };
         ABS1:                           AB <= {   ALU, ABL };
         ZP0:                            AB <= { 8'h00, ALU };
         ZP1:                            AB <= { 8'h00, ALU };
-        STK0:   if( IR[3] )             AB <= {   PCH, PCL };       // only for PHA,PHP
-                else                    AB <= { 8'h01, ALU };
+        STK0:  if( IR[3] )              AB <= {   PCH, PCL };       // only for PHA,PHP
+               else                     AB <= { 8'h01, ALU };
         STK1:
             casez( IR )
                 8'b??0?_????:           AB <= { 8'h01, ALU };       // BRK/RTI
@@ -160,7 +161,7 @@ always @(posedge clk)
  * Program Counter update
  */
 
-always @(negedge clk)
+always @(posedge clk)
     case( state )
         DECODE:
             casez( IR )
@@ -445,6 +446,7 @@ always @* begin
         BRA2:                           mem_bi = 0;         //
         DATA:                           mem_bi = 0;
         BCD0:                           mem_bi = 1;
+
     endcase
 end
 
@@ -664,6 +666,8 @@ always @* begin
 
         ABS1:                           CI = 1;                 // add carry from LSB
 
+        //BRA0:                           CI = 1;                 // add extra PC increment
+
         BRA1:                           CI = 1;                 // jump forward across page
 
         DATA:
@@ -686,8 +690,8 @@ end
 
 always @*
     case( alu_ai )
-        AI_PCL:                         AI = PCL;
-        AI_PCH:                         AI = PCH;
+        AI_PCL:                         AI = ABL;
+        AI_PCH:                         AI = ABH;
         AI_A:                           AI = A;
         AI_X:                           AI = X;
         AI_Y:                           AI = Y;
@@ -892,6 +896,7 @@ always @(posedge clk)
                 8'b?11?_??01:           V <= VO;                // ADC/SBC
             endcase
 
+
         DECODE:
             casez( IR )
                 8'b1011_1000:           V <= 0;                 // CLV
@@ -976,7 +981,7 @@ always @(posedge clk)
  * bcd is set when doing ADC/SBC with D flag on
  */
 
-always @* 
+always @*
     casez( IR )
         8'b?11?_??01:                   bcd = D;
         default:                        bcd = 0;
