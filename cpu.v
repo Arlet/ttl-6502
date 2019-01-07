@@ -41,14 +41,28 @@ reg [15:0] PC;
 reg [15:0] AB = 16'h0400;
 reg [7:0] ALU;
 
+/*
+ * BCD adjust term
+ */
 reg [3:0] ADJL;
 reg [3:0] ADJH;
-
 wire [7:0] ADJ = { ADJH, ADJL };
-wire [7:0] ABH = AB[15:8];
-wire [7:0] ABL = AB[7:0];
+
+/*
+ * AB incrementer. The 'inc_ab' signal indicates whether
+ * to increment AB or not. We add it to AB to create ABI.
+ */
+
+reg inc_ab;
+wire [15:0] ABI = AB + inc_ab;
+
+/*
+ * Program counter/Address Bus high and low parts
+ */
 wire [7:0] PCH = PC[15:8];
 wire [7:0] PCL = PC[7:0];
+wire [7:0] ABH = ABI[15:8];
+wire [7:0] ABL = ABI[7:0];
 
 reg WE = 1;             // write enable (active low)
 reg [7:0] DO;           // data out
@@ -126,18 +140,24 @@ always @(posedge clk)
                 8'b0??0_?000:           AB <= { 8'h01, ALU };       // stack instruction
                 8'b????_0001:           AB <= { 8'h00,  DB };       // (ZP,X) or (ZP),Y
                 8'b????_01??:           AB <= { 8'h00,  DB };       // ZP (possibly indexed)
-            default:                    AB <= AB + 1;
+            default:                    AB <= ABI;
             endcase
 
-        BCD0:                           AB <= AB + 1;
-        RTS0:                           AB <= AB + 1;
-        IND0:                           AB <= AB + 1;
-        FETCH: if( !bcd )               AB <= AB + 1;
+        BCD0:                           AB <= ABI;
+        RTS0:                           AB <= ABI;
+        IND0:                           AB <= ABI;
+        FETCH: if( !bcd )               AB <= ABI;
+
         DATA:  if( !rmw )               AB <= {   PCH, PCL };
+
         ABS0:                           AB <= {    DB, ALU };
+
         ABS1:                           AB <= {   ALU, ABL };
+
         ZP0:                            AB <= { 8'h00, ALU };
+
         ZP1:                            AB <= { 8'h00, ALU };
+
         STK0:  if( IR[3] )              AB <= {   PCH, PCL };       // only for PHA,PHP
                else                     AB <= { 8'h01, ALU };
         STK1:
@@ -158,19 +178,40 @@ always @(posedge clk)
     endcase
 
 /*
+ * address incrementer
+ *
+ * if 'inc_ab' is set, calculate AB + 1
+ */
+always @* begin
+    inc_ab = 0;
+    case( state )
+        DECODE:
+            casez( IR )
+                8'b0??0_1000:           inc_ab = 0;                 // PHA/PLA/PHP/PLP
+                default:                inc_ab = 1;
+            endcase
+        BCD0:                           inc_ab = 1;
+        RTS0:                           inc_ab = 1;
+        IND0:                           inc_ab = 1;
+        FETCH:                          inc_ab = 1;
+        ABS0:                           inc_ab = 1;
+    endcase
+end
+
+/*
  * Program Counter update
+ *
+ * Either take PC from ABI or leave old value.
  */
 
 always @(posedge clk)
     case( state )
-        DECODE:
-            casez( IR )
-                8'b0??0_1000:           PC <= AB;                   // PHA, PLA
-                default:                PC <= AB + 1;
-            endcase
-        BCD0, RTS0, IND0:               PC <= AB + 1;
-        FETCH: if( !bcd )               PC <= AB + 1;
-        ABS0: if( IR[3] )               PC <= AB + 1;               // only for true ABS
+        DECODE:                         PC <= ABI;
+        BCD0:                           PC <= ABI;
+        RTS0:                           PC <= ABI;
+        IND0:                           PC <= ABI;
+        FETCH: if( !bcd )               PC <= ABI;
+        ABS0: if( IR[3] )               PC <= ABI;                  // only for true ABS (not ABS0 as part of ZP,Y)
     endcase
 
 /*
