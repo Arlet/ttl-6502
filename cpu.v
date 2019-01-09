@@ -33,7 +33,18 @@ reg [7:0] S = 8'hff;
 reg [7:0] X = 5;
 reg [7:0] Y = 3;
 reg [7:0] A = 8'h41;
+
+/*
+ * M register (temporary memory hold)
+ */
+reg m_ld;               // enables loading M
+reg m_sel_adj;          // if set, load ADJ rather than DB
 reg [7:0] M;
+
+/*
+ * Program Counter
+ */
+reg pc_ld;              // enables loading PC
 reg [15:0] PC;
 
 // don't have reset yet, so init AB on code start
@@ -81,7 +92,7 @@ reg CI;                 // alu input carry
 /*
  * Instruction Register
  */
-reg ir_ld  ;            // enables loading IR from DB
+reg ir_ld;             // enables loading IR from DB
 reg [7:0] IR;
 
 /*
@@ -295,15 +306,21 @@ always @(posedge clk)
  * Either take PC from ABI or leave old value.
  */
 
-always @(posedge clk)
+always @* begin
+    pc_ld = 0;
     case( state )
-        DECODE:                         PC <= ABI;
-        BCD0:                           PC <= ABI;
-        RTS0:                           PC <= ABI;
-        IND0:                           PC <= ABI;
-        FETCH:                          PC <= ABI;
-        ABS0: if( IR[3] )               PC <= ABI;                  // only for true ABS (not ABS0 as part of ZP,Y)
+        DECODE:                         pc_ld = 1;
+        BCD0:                           pc_ld = 1;
+        RTS0:                           pc_ld = 1;
+        IND0:                           pc_ld = 1;
+        FETCH:                          pc_ld = 1;
+        ABS0:                           pc_ld = IR[3];               // only for true ABS (not ABS0 as part of ZP,Y)
     endcase
+end
+
+always @(posedge clk)
+    if( pc_ld )
+        PC <= ABI;
 
 /*
  * WE
@@ -393,27 +410,42 @@ always @*
 /*
  * M register holds recent value from DB as ALU input
  */
-always @(posedge clk)
+always @* begin
+    m_ld = 0;
     case( state )
-        ABS0:                           M <= DB;
+        ABS0:                           m_ld = 1;
 
         STK0:
             casez( IR )
-                8'b??1?_1???:           M <= DB;                    // PLP/PLA
-                8'b?1??_0???:           M <= DB;                    // RTS/RTI
+                8'b??1?_1???:           m_ld = 1;                   // PLP/PLA
+                8'b?1??_0???:           m_ld = 1;                   // RTS/RTI
             endcase
 
-        ZP1, IND0, DECODE:              M <= DB;
+        ZP1, IND0, DECODE:              m_ld = 1;
 
         STK1, STK2:
             casez( IR )
-                8'b?1??_????:           M <= DB;                    // RTS/RTI
+                8'b?1??_????:           m_ld = 1;                   // RTS/RTI
             endcase
 
-        DATA:                           M <= DB;                    //
+        DATA:                           m_ld = 1;                   //
 
         FETCH:                          M <= ADJ;
     endcase
+end
+
+/*
+ * m_sel_adj sets source of M
+ */
+always @*
+    case( state )
+        FETCH:                          m_sel_adj = 1;
+        default:                        m_sel_adj = 0;
+    endcase
+
+always @(posedge clk)
+    if( m_ld )
+        M <= m_sel_adj ? ADJ : DB;
 
 /*
  * Instruction Register. Normally we update IR in FETCH state, but if we have to
@@ -808,8 +840,6 @@ always @* begin
             endcase
 
         ABS1:                           CI = 1;                 // add carry from LSB
-
-        //BRA0:                           CI = 1;                 // add extra PC increment
 
         BRA1:                           CI = 1;                 // jump forward across page
 
