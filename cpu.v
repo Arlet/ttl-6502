@@ -38,7 +38,10 @@ reg [7:0] IR;
 reg [15:0] PC;
 
 // don't have reset yet, so init AB on code start
-reg [15:0] AB = 16'h0400;
+reg [7:0] ABH = 8'h04;
+reg [7:0] ABL = 8'h00;
+
+wire [15:0] AB = { ABH, ABL };
 reg [7:0] ALU;
 
 /*
@@ -57,12 +60,19 @@ reg inc_ab;
 wire [15:0] ABI = AB + inc_ab;
 
 /*
+ * select signals for ADH/ADL bus
+ */
+
+wire [2:0] sel_adh;
+wire [2:0] sel_adl;
+
+/*
  * Program counter/Address Bus high and low parts
  */
 wire [7:0] PCH = PC[15:8];
 wire [7:0] PCL = PC[7:0];
-wire [7:0] ABH = ABI[15:8];
-wire [7:0] ABL = ABI[7:0];
+reg [7:0] ADH;          // internal bus for next ABH
+reg [7:0] ADL;          // internal bus for next ABL
 
 reg WE = 1;             // write enable (active low)
 reg [7:0] DO;           // data out
@@ -129,58 +139,99 @@ reg [4:0] state = FETCH;
 wire [7:0] P = { N, V, 2'b11, D, I, Z, C };
 
 /*
- * Address Bus generation
+ * Address Bus logic
  *
  */
 
-always @(posedge clk)
+/*
+ * sel_adl determines who will be writing to ADL bus. Default is ABI, which is
+ * current address, possibly incremented.
+ */
+always @* begin
+    sel_adl = ADL_ABI;
     case( state )
         DECODE:
             casez( IR )
-                8'b0??0_?000:           AB <= { 8'h01, ALU };       // stack instruction
-                8'b????_0001:           AB <= { 8'h00,  DB };       // (ZP,X) or (ZP),Y
-                8'b????_01??:           AB <= { 8'h00,  DB };       // ZP (possibly indexed)
-            default:                    AB <= ABI;
+                8'b0??0_?000:           sel_adl = ADL_ALU;          // stack instruction
+                8'b????_0001:           sel_adl = ADL_DB;           // (ZP,X) or (ZP),Y
+                8'b????_01??:           sel_adl = ADL_DB;           // ZP (possibly indexed)
             endcase
 
-        BCD0:                           AB <= ABI;
-        RTS0:                           AB <= ABI;
-        IND0:                           AB <= ABI;
-        FETCH: if( !bcd )               AB <= ABI;
+        DATA:  if( !rmw )               sel_adl = ADL_PC;
 
-        DATA:  if( !rmw )               AB <= {   PCH, PCL };
+        ABS0:                           sel_adl = ADL_ALU;
 
-        ABS0:                           AB <= {    DB, ALU };
+        ZP0:                            sel_adl = ADL_ALU;
 
-        ABS1:                           AB <= {   ALU, ABL };
+        ZP1:                            sel_adl = ADL_ALU;
 
-        ZP0:                            AB <= { 8'h00, ALU };
+        STK0:  if( IR[3] )              sel_adl = ADL_PC;           // only for PHA,PHP
+               else                     sel_adl = ADL_ALU;
 
-        ZP1:                            AB <= { 8'h00, ALU };
-
-        STK0:  if( IR[3] )              AB <= {   PCH, PCL };       // only for PHA,PHP
-               else                     AB <= { 8'h01, ALU };
         STK1:
             casez( IR )
-                8'b??0?_????:           AB <= { 8'h01, ALU };       // BRK/RTI
-                8'b?01?_????:           AB <= {   PCH, PCL };       // JSR
-                8'b?11?_????:           AB <= {    DB, ALU };       // RTS
+                8'b??0?_????:           sel_adl = ADL_ALU;          // BRK/RTI
+                8'b?01?_????:           sel_adl = ADL_PC;           // JSR
+                8'b?11?_????:           sel_adl = ADL_ALU;          // RTS
             endcase
 
         STK2:
             casez( IR )
-                8'b?0??_????:           AB <= { 8'hFF, 8'hFE };     // BRK
-                8'b?1??_????:           AB <= {    DB, ALU };       // RTI
+                8'b?0??_????:           sel_adl = ADL_BRK;          // BRK
+                8'b?1??_????:           sel_adl = ADL_ALU;          // RTI
             endcase
-        BRA0:                           AB <= {   PCH, ALU };       // branch taken
-        BRA1:                           AB <= {   ALU, ABL };       // page crossing forward
-        BRA2:                           AB <= {   ALU, ABL };       // page crossing backward
+        BRA0:                           sel_adl = ADL_ALU;          // branch taken
     endcase
+end
+
+/*
+ * sel_adh determines who will be writing to ADH bus. Default is ABI, which is
+ * current address, possibly incremented.
+ */
+always @* begin
+    sel_adh = ADH_ABI;
+    case( state )
+        DECODE:
+            casez( IR )
+                8'b0??0_?000:           sel_adh = ADH_SP;           // stack instruction
+                8'b????_0001:           sel_adh = ADH_ZP;           // (ZP,X) or (ZP),Y
+                8'b????_01??:           sel_adh = ADH_ZP;           // ZP (possibly indexed)
+            endcase
+
+        DATA:  if( !rmw )               sel_adh = ADH_PC;
+
+        ABS0:                           sel_adh = ADH_DB;
+
+        ABS1:                           sel_adh = ADH_ALU;
+
+        ZP0:                            sel_adh = ADH_ZP;
+
+        ZP1:                            sel_adh = ADH_ZP;
+
+        STK0:  if( IR[3] )              sel_adh = ADH_PC;           // only for PHA,PHP
+               else                     sel_adh = ADH_SP;
+        STK1:
+            casez( IR )
+                8'b??0?_????:           sel_adh = ADH_SP;           // BRK/RTI
+                8'b?01?_????:           sel_adh = ADH_PC;           // JSR
+                8'b?11?_????:           sel_adh = ADH_DB;           // RTS
+            endcase
+
+        STK2:
+            casez( IR )
+                8'b?0??_????:           sel_adh = ADH_FF;           // BRK
+                8'b?1??_????:           sel_adh = ADH_DB;           // RTI
+            endcase
+        BRA0:                           sel_adh = ADH_PC;           // branch taken
+        BRA1:                           sel_adh = ADH_ALU;          // page crossing forward
+        BRA2:                           sel_adh = ADH_ALU;          // page crossing backward
+    endcase
+end
 
 /*
  * address incrementer
  *
- * if 'inc_ab' is set, calculate AB + 1
+ * if 'inc_ab' is set, calculate AB + 1, otherwise keep current address
  */
 always @* begin
     inc_ab = 0;
@@ -193,10 +244,45 @@ always @* begin
         BCD0:                           inc_ab = 1;
         RTS0:                           inc_ab = 1;
         IND0:                           inc_ab = 1;
-        FETCH:                          inc_ab = 1;
+        FETCH:                          inc_ab = !bcd;
         ABS0:                           inc_ab = 1;
     endcase
 end
+
+/*
+ * Internal Address Bus mux
+ */
+
+always @*
+    case( sel_adh )
+        ADH_ABI :                       ADH = ABI[15:8];
+        ADH_ALU :                       ADH = ALU;
+        ADH_DB  :                       ADH = DB;
+        ADH_PC  :                       ADH = PCH;
+        ADH_FF  :                       ADH = 8'hFF;
+        ADH_SP  :                       ADH = 8'h01;
+        ADH_ZP  :                       ADH = 8'h00;
+        default:                        ADH = 8'h55;                // to catch mistakes
+    endcase
+
+always @*
+    case( sel_adl )
+        ADL_ABI :						ADL = ABI[7:0];
+        ADL_ALU :						ADL = ALU;
+        ADL_DB  :						ADL = DB;
+        ADL_PC  :						ADL = PCL;
+        ADL_BRK :						ADL = 8'hFE;                // fixme, other vectors
+        default:                        ADL = 8'h55;                // to catch mistakes
+    endcase
+
+/*
+ * write external address
+ */
+always @(posedge clk)
+    ABH <= ADH;
+
+always @(posedge clk)
+    ABL <= ADL;
 
 /*
  * Program Counter update
@@ -731,8 +817,8 @@ end
 
 always @*
     case( alu_ai )
-        AI_PCL:                         AI = ABL;
-        AI_PCH:                         AI = ABH;
+        AI_PCL:                         AI = PCL;
+        AI_PCH:                         AI = PCH;
         AI_A:                           AI = A;
         AI_X:                           AI = X;
         AI_Y:                           AI = Y;
