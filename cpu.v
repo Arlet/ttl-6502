@@ -6,7 +6,7 @@
  * evolves, different parts will be rewritten
  * to match the hardware design.
  *
- * initial version passes Debug Dormann's test suite
+ * initial version passes Klaus Dormann's test suite
  * but does not yet support RST/IRQ/RDY/NMI.
  *
  * (C) Arlet Ottens, <arlet@c-scape.nl>
