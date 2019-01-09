@@ -7,7 +7,7 @@
  * to match the hardware design.
  *
  * initial version passes Debug Dormann's test suite
- * but does not yet support RST/IRQ/RDY/NMI or BCD.
+ * but does not yet support RST/IRQ/RDY/NMI.
  *
  * (C) Arlet Ottens, <arlet@c-scape.nl>
  *
@@ -34,7 +34,6 @@ reg [7:0] X = 5;
 reg [7:0] Y = 3;
 reg [7:0] A = 8'h41;
 reg [7:0] M;
-reg [7:0] IR;
 reg [15:0] PC;
 
 // don't have reset yet, so init AB on code start
@@ -78,6 +77,12 @@ reg WE = 1;             // write enable (active low)
 reg [7:0] DO;           // data out
 reg [7:0] AI;           // alu input A
 reg CI;                 // alu input carry
+
+/*
+ * Instruction Register
+ */
+reg ir_ld  ;            // enables loading IR from DB
+reg [7:0] IR;
 
 /*
  * ALU flag outputs
@@ -296,7 +301,7 @@ always @(posedge clk)
         BCD0:                           PC <= ABI;
         RTS0:                           PC <= ABI;
         IND0:                           PC <= ABI;
-        FETCH: if( !bcd )               PC <= ABI;
+        FETCH:                          PC <= ABI;
         ABS0: if( IR[3] )               PC <= ABI;                  // only for true ABS (not ABS0 as part of ZP,Y)
     endcase
 
@@ -411,21 +416,32 @@ always @(posedge clk)
     endcase
 
 /*
- * Instruction Register
+ * Instruction Register. Normally we update IR in FETCH state, but if we have to
+ * do a BCD adjustment, the FETCH state is followed by extra BCD0 state, so the
+ * IR is not updated until then.
+ *
+ * Also, in the DECODE state we load next IR for all single cycle instructions.
  */
-always @(posedge clk)
-    case( state )
-        FETCH: if( !bcd )               IR <= DB;
 
-        BCD0:                           IR <= DB;
+always @* begin
+    ir_ld = 0;
+    case( state )
+        FETCH:                          ir_ld = !bcd;
+
+        BCD0:                           ir_ld = 1;
 
         DECODE:
             casez( IR )
-                8'b???1_10?0:           IR <= DB;                   // odd column 8/A
-                8'b1???_10?0:           IR <= DB;                   // top column 8/A
-                8'b????_1010:           IR <= DB;                   // column A
+                8'b???1_10?0:           ir_ld = 1;                  // odd column 8/A
+                8'b1???_10?0:           ir_ld = 1;                  // top column 8/A
+                8'b????_1010:           ir_ld = 1;                  // column A
             endcase
     endcase
+end
+
+always @(posedge clk)
+    if( ir_ld )
+        IR <= DB;
 
 /*
  * ALU AI input
