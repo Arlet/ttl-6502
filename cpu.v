@@ -27,10 +27,10 @@ input NMI;              // non-maskable interrupt request
 input RDY;              // Ready signal. Pauses CPU when RDY=0
 input Debug;            // debug input, set when running very long test suite
 
-reg N, V, D, I, Z, C;   // flags
+reg N, V, D, B, I = 1, Z, C;   // flags
 
 reg [7:0] S = 8'hff;
-reg [7:0] X = 5;
+reg [7:0] X = 2;
 reg [7:0] Y = 3;
 reg [7:0] A = 8'h41;
 
@@ -81,18 +81,26 @@ wire [2:0] sel_adl;
  */
 wire [7:0] PCH = PC[15:8];
 wire [7:0] PCL = PC[7:0];
-reg [7:0] ADH;          // internal bus for next ABH
-reg [7:0] ADL;          // internal bus for next ABL
+reg [7:0] ADH;              // internal bus for next ABH
+reg [7:0] ADL;              // internal bus for next ABL
 
-reg WE = 1;             // write enable (active low)
-reg [7:0] DO;           // data out
-reg [7:0] AI;           // alu input A
-reg CI;                 // alu input carry
+reg WE = 1;                 // write enable (active low)
+reg [7:0] DO;               // data out
+reg [7:0] AI;               // alu input A
+reg CI;                     // alu input carry
+
+/*
+ * Interrupts and reset
+ */
+
+wire take_irq = IRQ & ~I;   // set if taking IRQ on next DECODE
+reg in_irq;                 // set if currently in IRQ handler
+assign B = ~in_irq;         // B flag
 
 /*
  * Instruction Register
  */
-reg ir_ld;             // enables loading IR from DB
+reg ir_ld;                  // enables loading IR from DB
 reg [7:0] IR;
 
 /*
@@ -152,7 +160,7 @@ reg bcd;
 reg [4:0] state = FETCH;
 
 // flags
-wire [7:0] P = { N, V, 2'b11, D, I, Z, C };
+wire [7:0] P = { N, V, 1'b1, B, D, I, Z, C };
 
 /*
  * Address Bus logic
@@ -255,12 +263,12 @@ always @* begin
         DECODE:
             casez( IR )
                 8'b0??0_1000:           inc_ab = 0;                 // PHA/PLA/PHP/PLP
-                default:                inc_ab = 1;
+                default:                inc_ab = !take_irq;
             endcase
         BCD0:                           inc_ab = 1;
         RTS0:                           inc_ab = 1;
         IND0:                           inc_ab = 1;
-        FETCH:                          inc_ab = !bcd;
+        FETCH:                          inc_ab = !bcd & !take_irq;
         ABS0:                           inc_ab = 1;
     endcase
 end
@@ -430,7 +438,7 @@ always @* begin
 
         DATA:                           m_ld = 1;                   //
 
-        FETCH:                          M <= ADJ;
+        FETCH:                          m_ld = 1;
     endcase
 end
 
@@ -472,8 +480,12 @@ always @* begin
 end
 
 always @(posedge clk)
+    if( ir_ld & take_irq )              in_irq <= 1;                //
+    else if( state == FETCH )           in_irq <= 0;                // 
+
+always @(posedge clk)
     if( ir_ld )
-        IR <= DB;
+        IR <= take_irq ? 8'h00 : DB;
 
 /*
  * ALU AI input
@@ -497,18 +509,15 @@ always @* begin
 
         ABS0:
             casez( IR )
-                8'b1011_1110:           alu_ai = AI_Y;          // LDX ABS,Y
-                8'b????_1001:           alu_ai = AI_Y;          // ABS,Y
+                8'b10?1_?110:           alu_ai = AI_Y;          // LDX ABS,Y
+                8'b???1_?001:           alu_ai = AI_Y;          // ABS,Y
                 8'b???1_11??:           alu_ai = AI_X;          // ABS,X
-                8'b???0_11??:           alu_ai = AI_M;          // ABS
-                8'b00?0_0000:           alu_ai = AI_M;          // JSR/BRK
-                8'b???1_0001:           alu_ai = AI_Y;          // (ZP), Y
-                8'b???0_0001:           alu_ai = AI_M;          // (ZP, X)
+                8'b???0_????:           alu_ai = AI_M;          // ABS/(ZP,X)
             endcase
 
         ZP0:
             casez( IR )
-                8'b10?1_0110:           alu_ai = AI_Y;          // LDX/STX ZP,Y
+                8'b10?1_?110:           alu_ai = AI_Y;          // LDX/STX ZP,Y
                 8'b????_01??:           alu_ai = AI_X;          // all other ZP,X
                 8'b???0_0001:           alu_ai = AI_X;          // (ZP,X)
                 8'b???1_0001:           alu_ai = AI_M;          // (ZP),Y
@@ -1219,6 +1228,14 @@ always @*
             BCD0:   statename = "BCD0";
     endcase
 
+wire [7:0] B_ = B ? "B" : "-";
+wire [7:0] C_ = C ? "C" : "-";
+wire [7:0] D_ = D ? "D" : "-";
+wire [7:0] I_ = I ? "I" : "-";
+wire [7:0] N_ = N ? "N" : "-";
+wire [7:0] V_ = V ? "V" : "-";
+wire [7:0] Z_ = Z ? "Z" : "-";
+
 integer cycle;
 
 always @( posedge clk )
@@ -1229,9 +1246,9 @@ always @( posedge clk )
 always @( posedge clk )
       if( cycle[19:0] == 0 || IR == 8'hdb || !Debug )
       //if( cycle > 77000000 )
-      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h ADJ:%h%h CNZDIV: %d%d%d%d%d%d (%d)",
+      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h IRQ:%h%h P:%s%s%s%s%s%s%s (%d)",
         cycle,
         statename, AB, DB, DO, PC, IR, WE, M, S, A, X, Y,
-        AI, alu.BI, CI, alu_op, ALU, CO, adj_lsd, adj_msd, C, N, Z, D, I, V, cond_true  );
+        AI, alu.BI, CI, alu_op, ALU, CO, IRQ, take_irq, N_, V_, B_, D_, I_, Z_, C_, cond_true  );
 
 endmodule
