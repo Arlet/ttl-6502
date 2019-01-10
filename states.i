@@ -45,9 +45,11 @@ parameter
 parameter
     ADL_ABI = 3'd0,
     ADL_ALU = 3'd1,
-    ADL_BRK = 3'd2,
-    ADL_DB  = 3'd3,
-    ADL_PC  = 3'd4;
+    ADL_DB  = 3'd2,
+    ADL_PC  = 3'd3,
+    ADL_BRK = 3'd4,
+    ADL_RST = 3'd5,
+    ADL_NMI = 3'd6;
 
 parameter
     ADH_ABI = 3'd0,

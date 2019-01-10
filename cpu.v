@@ -97,6 +97,9 @@ wire take_irq = IRQ & ~I;   // set if taking IRQ on next DECODE
 reg in_irq;                 // set if currently in IRQ handler
 assign B = ~in_irq;         // B flag
 
+wire take_rst = RST;
+reg in_rst;
+
 /*
  * Instruction Register
  */
@@ -201,7 +204,7 @@ always @* begin
 
         STK2:
             casez( IR )
-                8'b?0??_????:           sel_adl = ADL_BRK;          // BRK
+                8'b?0??_????:           sel_adl = in_rst ? ADL_RST : ADL_BRK;
                 8'b?1??_????:           sel_adl = ADL_ALU;          // RTI
             endcase
         BRA0:                           sel_adl = ADL_ALU;          // branch taken
@@ -295,8 +298,9 @@ always @*
         ADL_ALU :						ADL = ALU;
         ADL_DB  :						ADL = DB;
         ADL_PC  :						ADL = PCL;
-        ADL_BRK :						ADL = 8'hFE;                // fixme, other vectors
-        default:                        ADL = 8'h55;                // to catch mistakes
+        ADL_NMI :                       ADL = 8'hFA;                //
+        ADL_RST :						ADL = 8'hFC;                //
+        ADL_BRK :						ADL = 8'hFE;                //
     endcase
 
 /*
@@ -464,7 +468,7 @@ always @(posedge clk)
  */
 
 always @* begin
-    ir_ld = 0;
+    ir_ld = in_rst;
     case( state )
         FETCH:                          ir_ld = !bcd;
 
@@ -481,11 +485,15 @@ end
 
 always @(posedge clk)
     if( ir_ld & take_irq )              in_irq <= 1;                //
-    else if( state == FETCH )           in_irq <= 0;                // 
+    else if( state == FETCH )           in_irq <= 0;                //
+
+always @(posedge clk)
+    if( ir_ld & take_rst )              in_rst <= 1;                //
+    else if( state == FETCH )           in_rst <= 0;                //
 
 always @(posedge clk)
     if( ir_ld )
-        IR <= take_irq ? 8'h00 : DB;
+        IR <= (take_irq|in_rst) ? 8'h00 : DB;
 
 /*
  * ALU AI input
@@ -496,7 +504,7 @@ always @* begin
     case( state )
         DECODE:
             casez( IR )
-                8'b0??0_?000:           alu_ai = AI_S;          // JSR/BRK/RTS/RTI/PHA/PHP/PLP/PLA
+                8'b0??0_?000:           alu_ai = AI_S;              // JSR/BRK/RTS/RTI/PHA/PHP/PLP/PLA
                 8'b1011_1010:           alu_ai = AI_S;          // TSX
                 8'b100?_1010:           alu_ai = AI_X;          // TXA/TXS
                 8'b1001_1000:           alu_ai = AI_Y;          // TYA
@@ -1090,7 +1098,8 @@ always @(posedge clk)
  * state machine
  */
 always @(posedge clk)
-    case( state )
+    if( RST )                           state <= DECODE;
+    else case( state )
         DECODE:
             casez( IR )
                 8'b1101_1011:           $finish;                // STP instruction
@@ -1246,9 +1255,9 @@ always @( posedge clk )
 always @( posedge clk )
       if( cycle[19:0] == 0 || IR == 8'hdb || !Debug )
       //if( cycle > 77000000 )
-      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h IRQ:%h%h P:%s%s%s%s%s%s%s (%d)",
+      $display( "%d %8s AB:%h DB:%h DO:%h PC:%h IR:%h WE:%d M:%02x S:%02x A:%02x X:%02x Y:%02x AI:%h BI:%h CI:%d OP:%d ALU:%h CO:%h IRQ:%h%h RST:%h%h P:%s%s%s%s%s%s%s (%d)",
         cycle,
         statename, AB, DB, DO, PC, IR, WE, M, S, A, X, Y,
-        AI, alu.BI, CI, alu_op, ALU, CO, IRQ, take_irq, N_, V_, B_, D_, I_, Z_, C_, cond_true  );
+        AI, alu.BI, CI, alu_op, ALU, CO, IRQ, take_irq, RST, in_rst, N_, V_, B_, D_, I_, Z_, C_, cond_true  );
 
 endmodule
