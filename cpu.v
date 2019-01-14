@@ -107,13 +107,24 @@ reg ir_ld;                  // enables loading IR from DB
 reg [7:0] IR;
 
 /*
- * ALU flag outputs
+ * processor status flags
  */
+wire [7:0] P = { N, V, 1'b1, B, D, I, Z, C };
+reg cond_true;
 
-wire NO;
-wire ZO;
-wire VO;
-wire CO;
+wire NO;                    // ALU N flag output
+wire ZO;                    // ALU Z flag output
+wire VO;                    // ALU V flag output
+wire CO;                    // ALU C flag output
+wire BCD_C = C | CO;        // BCD carry
+
+reg [1:0] p_sel;            // selects flag source
+reg z_ld;                   // enables loading Z flag
+reg i_ld;                   // enables loading I flag
+reg d_ld;                   // enables loading D flag
+reg n_ld;                   // enables loading N flag
+reg c_ld;                   // enables loading C flag
+reg v_ld;                   // enables loading V flag
 
 /*
  * ALU inputs/outputs/operation control signals
@@ -149,21 +160,18 @@ alu alu(
 assign DB = WE ? 8'hzz : DO;
 
 
-reg cond_true;
 
 /*
  * some special instructions
  */
 reg ind;
+wire brk = (IR == 8'h00);
 wire jmp  = (IR == 8'h4c || IR == 8'h6c || IR == 8'h20 || IR == 8'h00);
 reg rmw;
 reg bcd;
 
 // processor state
 reg [4:0] state = FETCH;
-
-// flags
-wire [7:0] P = { N, V, 1'b1, B, D, I, Z, C };
 
 /*
  * Address Bus logic
@@ -903,195 +911,310 @@ always @(posedge clk)
     endcase
 
 /*
- * C flag
+ * flag source select
  */
-always @(posedge clk)
+always @* begin
+    p_sel = 2'b00;
     case( state )
         STK0:
             casez( IR )
-                8'b?01?_1???:           C <= DB[0];             // PLP
-                8'b?10?_0???:           C <= DB[0];             // RTI
+                8'b?01?_1???:           p_sel = 2'b01;              // PLP
+                8'b?10?_0???:           p_sel = 2'b01;              // RTI
+            endcase
+
+        STK2:
+            casez( IR )
+                8'b0000_0000:           p_sel = 2'b00;              // BRK/IRQ
             endcase
 
         DATA:
             casez( IR )
-                8'b0???_?110: if( !WE ) C <= CO;                // ROL M
+                8'b0???_?110:           p_sel = 2'b00;              // ROL M
+                8'b11??_?110:           p_sel = 2'b00;              // INC/DEC M
+                8'b0010_?100:           p_sel = 2'b01;              // BIT NV flags
             endcase
 
         FETCH:
             casez( IR )
-                8'b011?_??01:           C <= CO;                // ADC
-                8'b11??_??01:           C <= CO;                // CMP/SBC
-                8'b11?0_??00:           C <= CO;                // CPX/CPY #
+                8'b0110_1000:           p_sel = 2'b00;              // PLA
+                8'b011?_??01:           p_sel = 2'b00;              // ADC
+                8'b1010_????:           p_sel = 2'b00;              // LDA/LDX/LDY
+                8'b101?_?1??:           p_sel = 2'b00;              // LDA/LDX/LDY
+                8'b101?_??01:           p_sel = 2'b00;              // LDA
+                8'b11?0_??00:           p_sel = 2'b00;              // CPX/CPY
+                8'b11?0_??00:           p_sel = 2'b00;              // CPX/CPY #
+                8'b11??_??01:           p_sel = 2'b00;              // SBC/CMP
+                8'b11??_??01:           p_sel = 2'b00;              // CMP/SBC
             endcase
 
         DECODE:
             casez( IR )
-                8'b0???_1010:           C <= CO;
-                8'b00?1_1000:           C <= IR[5];             // CLC/SEC
+                8'b00?1_1000:           p_sel = 2'b11;              // CLC/SEC
+                8'b11?1_1000:           p_sel = 2'bx0;              // CLD/SED
+                8'b01?1_1000:           p_sel = 2'bx0;              // CLI/SEI
+                8'b1011_1000:           p_sel = 2'b1x;              // CLV
+                8'b0???_1010:           p_sel = 2'b00;              // ROL A
+                8'b0???_1010:           p_sel = 2'b00;              // ROL A
+                8'b100?_1000:           p_sel = 2'b00;              // DEY/TYA
+                8'b101?_1010:           p_sel = 2'b00;              // TAX/TSX
+                8'b10?0_10?0:           p_sel = 2'b00;              // DEY/TXA/TAY/TAX
+                8'b1?00_10?0:           p_sel = 2'b00;              // DEY/TXA/INY/DEX
+                8'b1??0_1000:           p_sel = 2'b00;              // DEY/TAY/INY/INX
+            endcase
+
+        BCD0:                           p_sel = 2'b10;              // BCD ADD
+    endcase
+end
+
+/*
+ * C flag load enable
+ */
+always @* begin
+    c_ld = 0;
+    case( state )
+        STK0:
+            casez( IR )
+                8'b?01?_1???:           c_ld = 1;             // PLP
+                8'b?10?_0???:           c_ld = 1;             // RTI
+            endcase
+
+        DATA:
+            casez( IR )
+                8'b0???_?110:           c_ld = !WE;           // ROL M
+            endcase
+
+        FETCH:
+            casez( IR )
+                8'b011?_??01:           c_ld = 1;             // ADC
+                8'b11??_??01:           c_ld = 1;             // CMP/SBC
+                8'b11?0_??00:           c_ld = 1;             // CPX/CPY #
+            endcase
+
+        DECODE:
+            casez( IR )
+                8'b0???_1010:           c_ld = 1;
+                8'b00?1_1000:           c_ld = 1;             // CLC/SEC
             endcase
 
         BCD0:
             casez( IR )
-                8'b011?_??01:           C <= C | CO;            // add
+                8'b011?_??01:           c_ld = 1;            // add
             endcase
 
     endcase
+end
 
-/*
- * N flag
- */
-always @(posedge clk)
+always @* begin
+    n_ld = 0;
     case( state )
         DATA:
             casez( IR )
-                8'b0???_?110: if( !WE ) N <= NO;                // ROL/ROR/ASL/LSR M
-                8'b11??_?110: if( !WE ) N <= NO;                // INC/DEC M
-                8'b0010_?100:           N <= DB[7];             // BIT
+                8'b0???_?110:           n_ld = !WE;             // ROL/ROR/ASL/LSR M
+                8'b11??_?110:           n_ld = !WE;             // INC/DEC M
+                8'b0010_?100:           n_ld = 1;               // BIT
             endcase
 
         DECODE:
             casez( IR )
-                8'b1?00_10?0:           N <= NO;                // DEY/TXA/INY/DEX
-                8'b10?0_10?0:           N <= NO;                // DEY/TXA/TAY/TAX
-                8'b100?_1000:           N <= NO;                // DEY/TYA
-                8'b101?_1010:           N <= NO;                // TAX/TSX
-                8'b1??0_1000:           N <= NO;                // DEY/TAY/INY/INX
-                8'b0???_1010:           N <= NO;                // ROL A
+                8'b1?00_10?0:           n_ld = 1;               // DEY/TXA/INY/DEX
+                8'b10?0_10?0:           n_ld = 1;               // DEY/TXA/TAY/TAX
+                8'b100?_1000:           n_ld = 1;               // DEY/TYA
+                8'b101?_1010:           n_ld = 1;               // TAX/TSX
+                8'b1??0_1000:           n_ld = 1;               // DEY/TAY/INY/INX
+                8'b0???_1010:           n_ld = 1;               // ROL A
             endcase
 
         STK0:
             casez( IR )
-                8'b?01?_1???:           N <= DB[7];             // PLP
-                8'b?10?_0???:           N <= DB[7];             // RTI
+                8'b?01?_1???:           n_ld = 1;               // PLP
+                8'b?10?_0???:           n_ld = 1;               // RTI
             endcase
 
         FETCH:
             casez( IR )
-                8'b0110_1000:           N <= NO;                // PLA
-                8'b0???_??01:           N <= NO;                // ADC
-                8'b1010_????:           N <= NO;                // LDA/LDX/LDY
-                8'b101?_?1??:           N <= NO;                // LDA/LDX/LDY
-                8'b11?0_??00:           N <= NO;                // CPX/CPY
-                8'b11??_??01:           N <= NO;                // SBC/CMP
-                8'b101?_??01:           N <= NO;                // LDA
+                8'b0110_1000:           n_ld = 1;               // PLA
+                8'b0???_??01:           n_ld = 1;               // ADC
+                8'b1010_????:           n_ld = 1;               // LDA/LDX/LDY
+                8'b101?_?1??:           n_ld = 1;               // LDA/LDX/LDY
+                8'b11?0_??00:           n_ld = 1;               // CPX/CPY
+                8'b11??_??01:           n_ld = 1;               // SBC/CMP
+                8'b101?_??01:           n_ld = 1;               // LDA
             endcase
 
-        BCD0:                           N <= NO;                // decimal Z after correction
+        BCD0:                           n_ld = 1;               // decimal Z after correction
     endcase
+end
 
 /*
  * Z flag
  */
-always @(posedge clk)
+always @* begin
+    z_ld = 0;
     case( state )
         DATA:
             casez( IR )
-                8'b0???_?110: if( !WE ) Z <= ZO;                // ROL/ROR/ASL/LSR M
-                8'b11??_?110: if( !WE ) Z <= ZO;                // INC/DEC M
+                8'b0???_?110:           z_ld = !WE;             // ROL/ROR/ASL/LSR M
+                8'b11??_?110:           z_ld = !WE;             // INC/DEC M
             endcase
 
         DECODE:
             casez( IR )
-                8'b1?00_10?0:           Z <= ZO;                // DEY/TXA/INY/DEX
-                8'b10?0_10?0:           Z <= ZO;                // DEY/TXA/TAY/TAX
-                8'b100?_1000:           Z <= ZO;                // DEY/TYA
-                8'b101?_1010:           Z <= ZO;                // TAX/TSX
-                8'b1??0_1000:           Z <= ZO;                // DEY/TAY/INY/INX
-                8'b0???_1010:           Z <= ZO;                // ROL A
+                8'b1?00_10?0:           z_ld = 1;               // DEY/TXA/INY/DEX
+                8'b10?0_10?0:           z_ld = 1;               // DEY/TXA/TAY/TAX
+                8'b100?_1000:           z_ld = 1;               // DEY/TYA
+                8'b101?_1010:           z_ld = 1;               // TAX/TSX
+                8'b1??0_1000:           z_ld = 1;               // DEY/TAY/INY/INX
+                8'b0???_1010:           z_ld = 1;               // ROL A
             endcase
 
         STK0:
             casez( IR )
-                8'b?01?_1???:           Z <= DB[1];             // PLP
-                8'b?10?_0???:           Z <= DB[1];             // RTI
+                8'b?01?_1???:           z_ld = 1;               // PLP
+                8'b?10?_0???:           z_ld = 1;               // RTI
             endcase
 
         FETCH:
             casez( IR )
-                8'b0110_1000:           Z <= ZO;                // PLA
-                8'b0010_?100:           Z <= ZO;                // BIT
-                8'b0???_??01:           Z <= ZO;                // ADC
+                8'b0110_1000:           z_ld = 1;               // PLA
+                8'b0010_?100:           z_ld = 1;               // BIT
+                8'b0???_??01:           z_ld = 1;               // ADC
 
-                8'b1010_????:           Z <= ZO;                // LDA/LDX/LDY
-                8'b101?_?1??:           Z <= ZO;                // LDA/LDX/LDY
-                8'b11?0_??00:           Z <= ZO;                // CPX/CPY
-                8'b11??_??01:           Z <= ZO;                // SBC/CMP
-                8'b101?_??01:           Z <= ZO;                // LDA
+                8'b1010_????:           z_ld = 1;               // LDA/LDX/LDY
+                8'b101?_?1??:           z_ld = 1;               // LDA/LDX/LDY
+                8'b11?0_??00:           z_ld = 1;               // CPX/CPY
+                8'b11??_??01:           z_ld = 1;               // SBC/CMP
+                8'b101?_??01:           z_ld = 1;               // LDA
             endcase
 
-        BCD0:                           Z <= ZO;                // decimal Z after correction
+        BCD0:                           z_ld = 1;               // decimal Z after correction
     endcase
+end
 
 /*
  * D flag
  */
 
-always @(posedge clk)
+always @* begin
+    d_ld = 0;
     case( state )
         STK0:
             casez( IR )
-                8'b?01?_1???:           D <= DB[3];             // PLP
-                8'b?10?_0???:           D <= DB[3];             // RTI
+                8'b?01?_1???:           d_ld = 1;               // PLP
+                8'b?10?_0???:           d_ld = 1;               // RTI
             endcase
 
         DECODE:
             casez( IR )
-                8'b11?1_1000:           D <= IR[5];             // CLD/SED
+                8'b11?1_1000:           d_ld = 1;               // CLD/SED
             endcase
     endcase
+end
+
 
 /*
  * I flag
  */
 
-always @(posedge clk)
+always @* begin
+    i_ld = 0;
     case( state )
         STK0:
             casez( IR )
-                8'b?01?_1???:           I <= DB[2];             // PLP
-                8'b?10?_0???:           I <= DB[2];             // RTI
+                8'b?01?_1???:           i_ld = 1;               // PLP
+                8'b?10?_0???:           i_ld = 1;               // RTI
             endcase
 
         STK2:
             casez( IR )
-                8'b0000_0000:           I <= 1;                 // BRK/IRQ
+                8'b0000_0000:           i_ld = 1;               // BRK/IRQ
             endcase
 
         DECODE:
             casez( IR )
-                8'b01?1_1000:           I <= IR[5];             // CLI/SEI
+                8'b01?1_1000:           i_ld = 1;               // CLI/SEI
             endcase
     endcase
+end
 
 /*
  * V flag
  */
 
-always @(posedge clk)
+always @* begin
+    v_ld = 0;
     case( state )
         DATA:
             casez( IR )
-                8'b0010_?100:           V <= DB[6];             // BIT
+                8'b0010_?100:           v_ld = 1;               // BIT
             endcase
 
         STK0:
             casez( IR )
-                8'b?01?_1???:           V <= DB[6];             // PLP
-                8'b?10?_0???:           V <= DB[6];             // RTI
+                8'b?01?_1???:           v_ld = 1;               // PLP
+                8'b?10?_0???:           v_ld = 1;               // RTI
             endcase
 
         FETCH:
             casez( IR )
-                8'b?11?_??01:           V <= VO;                // ADC/SBC
+                8'b?11?_??01:           v_ld = 1;               // ADC/SBC
             endcase
 
 
         DECODE:
             casez( IR )
-                8'b1011_1000:           V <= 0;                 // CLV
+                8'b1011_1000:           v_ld = 1;               // CLV
             endcase
     endcase
+end
+
+/*
+ * flag register update
+ */
+always @(posedge clk)
+    if( c_ld )
+        case( p_sel )
+            2'b00:                      C <= CO;
+            2'b01:                      C <= DB[0];
+            2'b10:                      C <= BCD_C;
+            2'b11:                      C <= IR[5];
+        endcase
+
+always @(posedge clk)
+    if( v_ld )
+        case( p_sel )
+            2'b00:                      V <= VO;
+            2'b01:                      V <= DB[6];
+            2'b10:                      V <= 0;
+            2'b11:                      V <= 0;
+        endcase
+
+always @(posedge clk)
+    if( n_ld )
+        case( p_sel[0] )
+            1'b0:                       N <= NO;
+            1'b1:                       N <= DB[7];
+        endcase
+
+always @(posedge clk)
+    if( z_ld )
+        case( p_sel[0] )
+            1'b0:                       Z <= ZO;
+            1'b1:                       Z <= DB[1];
+        endcase
+
+always @(posedge clk)
+    if( d_ld )
+        case( p_sel[0] )
+            1'b0:                       D <= IR[5];
+            1'b1:                       D <= DB[3];
+        endcase
+
+always @(posedge clk)
+    if( i_ld )
+        case( p_sel[0] )
+            1'b0:                       I <= IR[5] | brk;
+            1'b1:                       I <= DB[2];
+        endcase
 
 
 /*
